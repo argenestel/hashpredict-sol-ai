@@ -1,0 +1,22 @@
+{
+  "name": "server",
+  "module": "index.js",
+  "type": "module",
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "@aptos-labs/ts-sdk": "^1.28.0",
+    "@pythnetwork/client": "^2.22.0",
+    "aptos": "^1.21.0",
+    "axios": "^1.7.7",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "ethers": "5",
+    "express": "^4.21.0",
+    "openai": "^4.63.0"
+  }
+}
