@@ -8,7 +8,10 @@ import axios from 'axios';
 import { toast } from 'react-hot-toast';
 import { useWallet } from '@aptos-labs/wallet-adapter-react';
 import { Aptos, AptosConfig, Network } from '@aptos-labs/ts-sdk';
-
+import {
+  WalletMultiButton,
+} from "@solana/wallet-adapter-react-ui";
+import SolanaWalletSelector from 'components/card/SolanaWalletConnector';
 const MODULE_ADDRESS = '0xe5daef3712e9be57eee01a28e4b16997e89e0b446546d304d5ec71afc9d1bacd';
 const config = new AptosConfig({ network: Network.DEVNET });
 const aptos = new Aptos(config);
@@ -188,11 +191,15 @@ const NavBar = ({ isMobile }) => {
                   <RiMoonFill className="h-5 w-5" />
                 )}
               </button>
-              <WalletSelector onConnect={(isConnected, accountData) => {
+              {/* <WalletSelector onConnect={(isConnected, accountData) => {
                 setConnected(isConnected);
                 setAccount(accountData);
-              }} />
-            </div>
+              }} /> */}
+ <SolanaWalletSelector onConnect={(connected, address) => {
+          // Handle connection status changes here
+          console.log("Wallet connected:", connected);
+          console.log("Wallet address:", address);
+        }} />        </div>
           </div>
 
         </div>
