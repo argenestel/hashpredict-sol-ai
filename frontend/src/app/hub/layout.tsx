@@ -50,7 +50,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         <QueryClientProvider client={queryClient}>
           <DynamicWagmiConnector>
           <NavBar isMobile={isMobile} />
-          <main className={`mx-auto min-h-screen p-2 ${isMobile ? '!pt-[70px] pb-24' : '!pt-[70px]'} md:p-2`}>
+          <main className={`min-h-screen p-2 ${isMobile ? '!pt-[70px] pb-24' : '!pt-[70px]'} md:p-2`}>
               {children}
               </main>
           </DynamicWagmiConnector>

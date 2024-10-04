@@ -1,18 +1,18 @@
 'use client'
 import React, { useState, useEffect } from 'react';
 import { useConnection, useWallet } from '@solana/wallet-adapter-react';
-import { PublicKey, Transaction, SystemProgram, LAMPORTS_PER_SOL } from '@solana/web3.js';
+import { PublicKey, LAMPORTS_PER_SOL } from '@solana/web3.js';
 import { Program, AnchorProvider, web3, BN } from '@project-serum/anchor';
 import { motion, AnimatePresence } from 'framer-motion';
-import { IoAdd, IoClose, IoChevronDown, IoCopy, IoWarning, IoBulb, IoWater, IoRefresh } from 'react-icons/io5';
+import { IoAdd, IoClose, IoChevronDown, IoCopy, IoWarning, IoBulb, IoWater, IoRefresh, IoFilter } from 'react-icons/io5';
 import axios from 'axios';
 import toast, { Toaster } from 'react-hot-toast';
 
-// Import your IDL here
 import idl from '../../../predictionmarketidl.json';
 import PredictionCard from 'components/card/PredictionCard';
 
 const PROGRAM_ID = new PublicKey("AqzG1zi9ezLhckksnbjJvNEPkB9qDvnQfZTyuZQh7jdw");
+const MARKET_STATE_PDA = new PublicKey("CwsZNAe4zqmjarUFERxKhJGVRkmy4tuGPaAubGg3UKjT");
 
 interface PredictionData {
   publicKey: PublicKey;
@@ -34,7 +34,6 @@ interface PredictionData {
     tags: string[];
   };
 }
-const MARKET_STATE_PDA = new PublicKey("Gsmt7fBHxJcdzSy9M3tACdTBf66ku5iLrxgnjtUxt2An");
 
 const SolanaPredictionDashboard: React.FC = () => {
   const { connection } = useConnection();
@@ -56,6 +55,7 @@ const SolanaPredictionDashboard: React.FC = () => {
   const [topic, setTopic] = useState('');
   const [generatedPredictions, setGeneratedPredictions] = useState([]);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isFilterOpen, setIsFilterOpen] = useState(false);
 
   const provider = new AnchorProvider(connection, wallet as any, {});
   const program = new Program(idl as any, PROGRAM_ID, provider);
@@ -98,6 +98,8 @@ const SolanaPredictionDashboard: React.FC = () => {
     }
   };
 
+  
+
   const handleCreatePrediction = async () => {
     if (!wallet.publicKey) {
       toast.error('Wallet not connected');
@@ -134,9 +136,6 @@ const SolanaPredictionDashboard: React.FC = () => {
       toast.error('Failed to create prediction');
     }
   };
-
-
-
 
   const handleGeneratePredictions = async () => {
     setIsGenerating(true);
@@ -175,48 +174,104 @@ const SolanaPredictionDashboard: React.FC = () => {
     selectedTags.length === 0 || prediction.account.tags.some(tag => selectedTags.includes(tag))
   );
 
-  return (
-    <div className="p-4 md:p-6 lg:p-8 bg-gray-100 dark:bg-navy-900 min-h-screen">
-      <Toaster />
-      <div className="max-w-7xl mx-auto">
-        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-8 space-y-4 sm:space-y-0">
-          <h1 className="text-2xl sm:text-3xl font-bold text-navy-700 dark:text-white mb-4 sm:mb-0">Solana Prediction Dashboard</h1>
-          <div className="flex flex-wrap gap-2 w-full sm:w-auto">
-            <motion.button
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              onClick={() => {console.log("requested funds")}}
-              className="bg-blue-500 text-white rounded-lg py-2 px-3 text-sm flex items-center justify-center flex-grow sm:flex-grow-0"
-            >
-              <IoWater className="mr-1 sm:mr-2" /> <span className="hidden sm:inline">Request</span> Funds
-            </motion.button>
-            {isAdminRole && (
-              <>
-                <motion.button
-                  whileHover={{ scale: 1.05 }}
-                  whileTap={{ scale: 0.95 }}
-                  onClick={() => setIsModalOpen(true)}
-                  className="bg-green-500 text-white rounded-lg py-2 px-3 text-sm flex items-center justify-center flex-grow sm:flex-grow-0"
-                >
-                  <IoAdd className="mr-1 sm:mr-2" /> Create
-                </motion.button>
-                <motion.button
-                  whileHover={{ scale: 1.05 }}
-                  whileTap={{ scale: 0.95 }}
-                  onClick={() => setIsGeneratePopupOpen(true)}
-                  className="bg-purple-500 text-white rounded-lg py-2 px-3 text-sm flex items-center justify-center flex-grow sm:flex-grow-0"
-                >
-                  <IoBulb className="mr-1 sm:mr-2" /> Generate
-                </motion.button>
-              </>
-            )}
-          </div>
-        </div>
 
-        {/* Tags filter */}
-        <div className="mb-4">
-          <h2 className="text-lg font-semibold text-navy-700 dark:text-white mb-2">Filter by Tags:</h2>
-          <div className="flex flex-wrap gap-2">
+  const filterPredictions = (predictions: PredictionData[]) => {
+    return predictions.filter(prediction => 
+      selectedTags.length === 0 || prediction.account.tags.some(tag => selectedTags.includes(tag))
+    );
+  };
+
+  const categorizeAndFilterPredictions = () => {
+    const now = Date.now() / 1000;
+    const filtered = filterPredictions(predictions);
+    return {
+      active: filtered.filter(p => 'active' in p.account.state && Number(p.account.endTime) > now),
+      expired: filtered.filter(p => 'active' in p.account.state && Number(p.account.endTime) <= now),
+      resolved: filtered.filter(p => 'resolved' in p.account.state),
+    };
+  };
+
+  const { active, expired, resolved } = categorizeAndFilterPredictions();
+  const [activeTab, setActiveTab] = useState<'active' | 'expired' | 'resolved'>('active');
+
+  const renderTabButton = (tabName: 'active' | 'expired' | 'resolved', label: string) => (
+    <motion.button
+      whileHover={{ scale: 1.05 }}
+      whileTap={{ scale: 0.95 }}
+      onClick={() => setActiveTab(tabName)}
+      className={`py-2 px-4 text-sm font-medium rounded-lg ${
+        activeTab === tabName
+          ? 'bg-brand-500 text-white'
+          : 'bg-gray-200 dark:bg-navy-700 text-gray-700 dark:text-gray-300'
+      }`}
+    >
+      {label}
+    </motion.button>
+  );
+
+  
+  return (
+    <div className="min-h-screen bg-gray-100 dark:bg-navy-900">
+    <Toaster />
+    <div className="container mx-auto px-4 py-8">
+      <div className="flex flex-col md:flex-row justify-between items-center mb-8">
+        <div className="flex flex-wrap gap-2">
+          <motion.button
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            onClick={() => {console.log("requested funds")}}
+            className="bg-blue-500 text-white rounded-lg py-2 px-4 text-sm flex items-center justify-center"
+          >
+            <IoWater className="mr-2" /> Request Funds
+          </motion.button>
+          {isAdminRole && (
+            <>
+              <motion.button
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                onClick={() => setIsModalOpen(true)}
+                className="bg-green-500 text-white rounded-lg py-2 px-4 text-sm flex items-center justify-center"
+              >
+                <IoAdd className="mr-2" /> Create
+              </motion.button>
+              <motion.button
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                onClick={() => setIsGeneratePopupOpen(true)}
+                className="bg-purple-500 text-white rounded-lg py-2 px-4 text-sm flex items-center justify-center"
+              >
+                <IoBulb className="mr-2" /> Generate
+              </motion.button>
+            </>
+          )}
+        </div>
+      </div>
+
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 space-y-4 sm:space-y-0">
+        <div className="flex space-x-2">
+          {renderTabButton('active', 'Active')}
+          {renderTabButton('expired', 'Expired')}
+          {renderTabButton('resolved', 'Resolved')}
+        </div>
+        <motion.button
+          whileHover={{ scale: 1.05 }}
+          whileTap={{ scale: 0.95 }}
+          onClick={() => setIsFilterOpen(!isFilterOpen)}
+          className="bg-gray-200 dark:bg-navy-700 text-gray-700 dark:text-gray-300 rounded-lg py-2 px-4 text-sm flex items-center justify-center"
+        >
+          <IoFilter className="mr-2" /> Filter by Tags
+          <IoChevronDown className={`ml-2 transition-transform ${isFilterOpen ? 'rotate-180' : ''}`} />
+        </motion.button>
+      </div>
+
+      <AnimatePresence>
+        {isFilterOpen && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            className="mb-6 flex flex-wrap gap-2"
+          >
             {allTags.map(tag => (
               <button
                 key={tag}
@@ -230,51 +285,58 @@ const SolanaPredictionDashboard: React.FC = () => {
                 {tag}
               </button>
             ))}
-          </div>
-        </div>
-
-        {isLoading ? (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
-            {[...Array(6)].map((_, index) => (
-              <div key={index} className="bg-white dark:bg-navy-800 rounded-xl shadow-lg p-4 sm:p-6 animate-pulse">
-                <div className="h-6 bg-gray-200 dark:bg-navy-700 rounded w-3/4 mb-4"></div>
-                <div className="h-4 bg-gray-200 dark:bg-navy-700 rounded w-1/2 mb-2"></div>
-                <div className="h-4 bg-gray-200 dark:bg-navy-700 rounded w-1/3 mb-4"></div>
-                <div className="h-20 bg-gray-200 dark:bg-navy-700 rounded mb-4"></div>
-                <div className="h-10 bg-gray-200 dark:bg-navy-700 rounded"></div>
-              </div>
-            ))}
-          </div>
-        ) : filteredPredictions.length > 0 ? (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
-            {filteredPredictions.map((prediction) => (
-                <PredictionCard
-                key={prediction.publicKey.toString()}
-                prediction={prediction}
-                onPredict={() => {}}
-                isAdmin={isAdminRole}
-                program={program}
-                wallet={wallet}
-              />
-            ))}
-          </div>
-        ) : (
-          <div className="text-center py-12">
-            <h2 className="text-xl sm:text-2xl font-bold text-navy-700 dark:text-white mb-4">No predictions available</h2>
-            <p className="text-gray-600 dark:text-gray-400 mb-8">Create a new prediction to get started!</p>
-            {isAdminRole && (
-              <motion.button
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
-                onClick={() => setIsModalOpen(true)}
-                className="bg-green-500 text-white rounded-lg py-2 px-4 text-base sm:text-lg font-semibold flex items-center justify-center mx-auto"
-              >
-                <IoAdd className="mr-2" /> Create Prediction
-              </motion.button>
-            )}
-          </div>
+          </motion.div>
         )}
-      </div>
+      </AnimatePresence>
+
+      {isLoading ? (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3 gap-6">
+          {[...Array(8)].map((_, index) => (
+            <div key={index} className="bg-white dark:bg-navy-800 rounded-xl shadow-lg p-6 animate-pulse">
+              <div className="h-6 bg-gray-200 dark:bg-navy-700 rounded w-3/4 mb-4"></div>
+              <div className="h-4 bg-gray-200 dark:bg-navy-700 rounded w-1/2 mb-2"></div>
+              <div className="h-4 bg-gray-200 dark:bg-navy-700 rounded w-1/3 mb-4"></div>
+              <div className="h-20 bg-gray-200 dark:bg-navy-700 rounded mb-4"></div>
+              <div className="h-10 bg-gray-200 dark:bg-navy-700 rounded"></div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3 gap-6">
+          {(activeTab === 'active' ? active : activeTab === 'expired' ? expired : resolved).map((prediction) => (
+            <PredictionCard
+              key={prediction.publicKey.toString()}
+              prediction={prediction}
+              onPredict={() => {}}
+              isAdmin={isAdminRole}
+              program={program}
+              wallet={wallet}
+            />
+          ))}
+        </div>
+      )}
+
+      {!isLoading && (activeTab === 'active' ? active : activeTab === 'expired' ? expired : resolved).length === 0 && (
+        <div className="text-center py-12">
+          <h2 className="text-2xl font-bold text-navy-700 dark:text-white mb-4">No {activeTab} predictions available</h2>
+          <p className="text-gray-600 dark:text-gray-400 mb-8">
+            {activeTab === 'active'
+              ? 'Create a new prediction to get started!'
+              : `There are currently no ${activeTab} predictions.`}
+          </p>
+          {isAdminRole && activeTab === 'active' && (
+            <motion.button
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              onClick={() => setIsModalOpen(true)}
+              className="bg-green-500 text-white rounded-lg py-2 px-4 text-lg font-semibold flex items-center justify-center mx-auto"
+            >
+              <IoAdd className="mr-2" /> Create Prediction
+            </motion.button>
+          )}
+        </div>
+      )}
+    </div>
 
       {/* Create Prediction Modal */}
       <AnimatePresence>
@@ -289,10 +351,10 @@ const SolanaPredictionDashboard: React.FC = () => {
               initial={{ scale: 0.9, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.9, opacity: 0 }}
-              className="bg-white dark:bg-navy-800 rounded-lg p-4 sm:p-6 w-full max-w-lg max-h-[90vh] overflow-y-auto"
+              className="bg-white dark:bg-navy-800 rounded-lg p-6 w-full max-w-lg max-h-[90vh] overflow-y-auto"
             >
               <div className="flex justify-between items-center mb-4">
-                <h2 className="text-lg sm:text-xl font-bold text-navy-700 dark:text-white">Create New Prediction</h2>
+                <h2 className="text-xl font-bold text-navy-700 dark:text-white">Create New Prediction</h2>
                 <button onClick={() => setIsModalOpen(false)} className="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200">
                   <IoClose size={24} />
                 </button>
@@ -312,19 +374,21 @@ const SolanaPredictionDashboard: React.FC = () => {
                   placeholder="Duration in seconds"
                   className="w-full p-2 border rounded dark:bg-navy-700 dark:text-white dark:border-navy-600"
                 />
-                <input
+ <input
                   type="text"
                   value={newPrediction.tags}
                   onChange={(e) => setNewPrediction({...newPrediction, tags: e.target.value})}
                   placeholder="Tags (comma separated)"
                   className="w-full p-2 border rounded dark:bg-navy-700 dark:text-white dark:border-navy-600"
                 />
-                <button
+                <motion.button
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
                   onClick={handleCreatePrediction}
                   className="w-full bg-brand-500 text-white rounded-lg py-2 px-4 hover:bg-brand-600 transition-colors"
                 >
                   Create Prediction
-                </button>
+                </motion.button>
               </div>
             </motion.div>
           </motion.div>
@@ -344,10 +408,10 @@ const SolanaPredictionDashboard: React.FC = () => {
               initial={{ scale: 0.9, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.9, opacity: 0 }}
-              className="bg-white dark:bg-navy-800 rounded-lg p-4 sm:p-6 w-full max-w-lg max-h-[80vh] overflow-y-auto"
+              className="bg-white dark:bg-navy-800 rounded-lg p-6 w-full max-w-lg max-h-[80vh] overflow-y-auto"
             >
               <div className="flex justify-between items-center mb-4">
-                <h2 className="text-lg sm:text-xl font-bold text-navy-700 dark:text-white">Generate AI Predictions</h2>
+                <h2 className="text-xl font-bold text-navy-700 dark:text-white">Generate AI Predictions</h2>
                 <button onClick={() => setIsGeneratePopupOpen(false)} className="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200">
                   <IoClose size={24} />
                 </button>
@@ -360,25 +424,36 @@ const SolanaPredictionDashboard: React.FC = () => {
                   placeholder="Enter a topic for predictions"
                   className="w-full p-2 border rounded dark:bg-navy-700 dark:text-white dark:border-navy-600"
                 />
-                <button
+                <motion.button
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
                   onClick={handleGeneratePredictions}
                   disabled={isGenerating}
                   className="w-full bg-purple-500 text-white rounded-lg py-2 px-4 hover:bg-purple-600 transition-colors disabled:bg-purple-300 disabled:cursor-not-allowed"
                 >
-                  {isGenerating ? 'Generating...' : 'Generate Predictions'}
-                </button>
-                {generatedPredictions.map((prediction: any, index: number) => (
-                  <motion.div
-                    key={index}
-                    whileHover={{ scale: 1.02 }}
-                    className="bg-gray-100 dark:bg-navy-700 p-4 rounded-lg cursor-pointer"
-                    onClick={() => handleSelectPrediction(prediction)}
-                  >
-                    <h3 className="font-bold text-navy-700 dark:text-white mb-2">{prediction.description}</h3>
-                    <p className="text-sm text-gray-600 dark:text-gray-400">Duration: {prediction.duration} seconds</p>
-                    <p className="text-sm text-gray-600 dark:text-gray-400">Tags: {prediction.tags.join(', ')}</p>
-                  </motion.div>
-                ))}
+                  {isGenerating ? (
+                    <div className="flex items-center justify-center">
+                      <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white mr-2"></div>
+                      Generating...
+                    </div>
+                  ) : (
+                    'Generate Predictions'
+                  )}
+                </motion.button>
+                <div className="space-y-3 mt-4">
+                  {generatedPredictions.map((prediction: any, index: number) => (
+                    <motion.div
+                      key={index}
+                      whileHover={{ scale: 1.02 }}
+                      className="bg-gray-100 dark:bg-navy-700 p-4 rounded-lg cursor-pointer transition-colors hover:bg-gray-200 dark:hover:bg-navy-600"
+                      onClick={() => handleSelectPrediction(prediction)}
+                    >
+                      <h3 className="font-bold text-navy-700 dark:text-white mb-2">{prediction.description}</h3>
+                      <p className="text-sm text-gray-600 dark:text-gray-400">Duration: {prediction.duration} seconds</p>
+                      <p className="text-sm text-gray-600 dark:text-gray-400">Tags: {prediction.tags.join(', ')}</p>
+                    </motion.div>
+                  ))}
+                </div>
               </div>
             </motion.div>
           </motion.div>
