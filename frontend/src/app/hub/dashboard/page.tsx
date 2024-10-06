@@ -11,8 +11,9 @@ import toast, { Toaster } from 'react-hot-toast';
 import idl from '../../../predictionmarketidl.json';
 import PredictionCard from 'components/card/PredictionCard';
 
-const PROGRAM_ID = new PublicKey("AqzG1zi9ezLhckksnbjJvNEPkB9qDvnQfZTyuZQh7jdw");
-const MARKET_STATE_PDA = new PublicKey("CwsZNAe4zqmjarUFERxKhJGVRkmy4tuGPaAubGg3UKjT");
+const PROGRAM_ID = new PublicKey("J4bMC3qvhsjSDJojvVGUt1tzvm6xzk6R2hhUnwDSzH7s");
+const MARKET_STATE_PDA = new PublicKey("CySirkQdQbfQzBj3Wgk1Qt7BRU25hV6DiSWxhi7xs9JL");
+
 
 interface PredictionData {
   publicKey: PublicKey;
@@ -32,6 +33,7 @@ interface PredictionData {
     predictionType: number;
     optionsCount: number;
     tags: string[];
+    pendingClaims: { user: PublicKey; amount: BN }[];
   };
 }
 
@@ -85,11 +87,37 @@ const SolanaPredictionDashboard: React.FC = () => {
     }
   };
 
+
+  useEffect(() => {
+    if (wallet.publicKey) {
+      checkAdminRole();
+      fetchPredictions();
+    }
+  }, [wallet.publicKey, connection]);
+
   const fetchPredictions = async () => {
     setIsLoading(true);
     try {
-      const predictions = await program.account.prediction.all();
-      setPredictions(predictions as PredictionData[]);
+      const fetchedPredictions = await program.account.prediction.all();
+      const formattedPredictions = fetchedPredictions.map(p => ({
+        ...p,
+        account: {
+          ...p.account,
+          id: p.account.id.toString(),
+          totalVotes: p.account.totalVotes.toString(),
+          yesVotes: p.account.yesVotes.toString(),
+          noVotes: p.account.noVotes.toString(),
+          yesAmount: p.account.yesAmount.toString(),
+          noAmount: p.account.noAmount.toString(),
+          totalAmount: p.account.totalAmount.toString(),
+          pendingClaims: (p.account.pendingClaims || []).map(claim => ({
+            ...claim,
+            amount: claim.amount.toString(),
+            shares: claim.shares.toString()
+          }))
+        }
+      }));
+      setPredictions(formattedPredictions);
     } catch (error) {
       console.error('Error fetching predictions:', error);
       setPredictions([]);
@@ -98,14 +126,12 @@ const SolanaPredictionDashboard: React.FC = () => {
     }
   };
 
-  
-
   const handleCreatePrediction = async () => {
     if (!wallet.publicKey) {
       toast.error('Wallet not connected');
       return;
     }
-  
+        
     try {
       const tags = newPrediction.tags.split(',').map(tag => tag.trim());
       const newPredictionAccount = web3.Keypair.generate();
@@ -303,16 +329,25 @@ const SolanaPredictionDashboard: React.FC = () => {
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3 gap-6">
-          {(activeTab === 'active' ? active : activeTab === 'expired' ? expired : resolved).map((prediction) => (
-            <PredictionCard
-              key={prediction.publicKey.toString()}
-              prediction={prediction}
-              onPredict={() => {}}
-              isAdmin={isAdminRole}
-              program={program}
-              wallet={wallet}
-            />
-          ))}
+{(activeTab === 'active' ? active : activeTab === 'expired' ? expired : resolved).map((prediction) => (
+     <PredictionCard
+     key={prediction.publicKey.toString()}
+     prediction={prediction}
+     onPredict={(publicKey, verdict, amount) => {
+       // Update the local state when a prediction is made
+       setPredictions(prevPredictions => 
+         prevPredictions.map(p => 
+           p.publicKey.equals(publicKey) 
+             ? { ...p, account: { ...p.account, /* update relevant fields */ } }
+             : p
+         )
+       );
+     }}
+     isAdmin={isAdminRole}
+     program={program}
+     wallet={wallet}
+   />
+))}
         </div>
       )}
 

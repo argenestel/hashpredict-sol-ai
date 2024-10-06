@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
-import { LAMPORTS_PER_SOL, PublicKey, SystemProgram } from '@solana/web3.js';
+import React, { useState, useEffect, useCallback } from 'react';
+import { clusterApiUrl, Connection, LAMPORTS_PER_SOL, PublicKey, SystemProgram, Transaction } from '@solana/web3.js';
 import { BN } from '@project-serum/anchor';
-import { motion } from 'framer-motion';
+import { AnimatePresence, motion } from 'framer-motion';
 import { IoTimeOutline, IoWalletOutline, IoTrendingUp, IoTrendingDown, IoSwapHorizontal, IoAdd, IoRemove, IoCheckmark, IoClose, IoCash, IoBulb, IoRefresh } from 'react-icons/io5';
 import axios from 'axios';
 import toast from 'react-hot-toast';
@@ -24,7 +24,14 @@ interface PredictionData {
     predictionType: number;
     optionsCount: number;
     tags: string[];
+    pendingClaims: { user: PublicKey; amount: BN }[];
   };
+}
+
+interface PendingClaim {
+  user: PublicKey;
+  amount: BN;
+  shares: number; // Add this field
 }
 
 interface PredictionCardProps {
@@ -34,6 +41,9 @@ interface PredictionCardProps {
   program: any;
   wallet: any;
 }
+
+const PYTH_SOL_PRICE_FEED_ID = '0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d';
+
 
 const PredictionCard: React.FC<PredictionCardProps> = ({ prediction, onPredict, isAdmin, program, wallet }) => {
   const [shareAmount, setShareAmount] = useState(1);
@@ -46,38 +56,469 @@ const PredictionCard: React.FC<PredictionCardProps> = ({ prediction, onPredict, 
   const [canClaim, setCanClaim] = useState(false);
   const [claimsPending, setClaimsPending] = useState(false);
   const [claimsToApprove, setClaimsToApprove] = useState<any[]>([]);
+  const [pendingClaims, setPendingClaims] = useState<{ user: PublicKey; amount: BN }[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const MARKET_STATE_PUBKEY = new PublicKey("CySirkQdQbfQzBj3Wgk1Qt7BRU25hV6DiSWxhi7xs9JL");
+
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [modalData, setModalData] = useState<any>(null);
+  const [isExecutingFinalization, setIsExecutingFinalization] = useState(false);
+
+  const [isClaimsInitialized, setIsClaimsInitialized] = useState(false);
+  const [rewardsDistributed, setRewardsDistributed] = useState(false);
+
+  const [allPredictions, setAllPredictions] = useState<any[]>([]);
+
+  // useEffect(() => {
+  //   if (program) {
+  //     fetchAllPredictions();
+  //   }
+  // }, [program]);
+
+  // const fetchAllPredictions = async () => {
+  //   try {
+  //     const predictions = await program.account.prediction.all();
+  //     setAllPredictions(predictions);
+  //     console.log("All predictions:", predictions);
+  //   } catch (error) {
+  //     console.error("Error fetching all predictions:", error);
+  //   }
+  // };
 
   useEffect(() => {
-    if (prediction) {
-      setIsPredictionEnded(Date.now() / 1000 > Number(prediction.account.endTime));
+    if (prediction.account.pendingClaims) {
+      setPendingClaims(prediction.account.pendingClaims);
     }
-    fetchSolPrice();
-    checkClaimEligibility();
-  }, [prediction, wallet.publicKey]);
+  }, [prediction.account.pendingClaims]);
 
-  const checkClaimEligibility = async () => {
-    if (wallet.publicKey && 'resolved' in prediction.account.state) {
+  const fetchWithRetry = async (fetchFunction, maxRetries = 5) => {
+    let retries = 0;
+    while (retries < maxRetries) {
       try {
-        const [userPrediction] = await PublicKey.findProgramAddress(
-          [
-            Buffer.from("user_prediction"),
-            prediction.publicKey.toBuffer(),
-            wallet.publicKey.toBuffer(),
-          ],
-          program.programId
-        );
-        const userPredictionAccount = await program.account.userPrediction.fetch(userPrediction);
-        const isWinner = 
-          (userPredictionAccount.verdict && 'true' in prediction.account.result) ||
-          (!userPredictionAccount.verdict && 'false' in prediction.account.result);
-        setCanClaim(isWinner);
+        return await fetchFunction();
       } catch (error) {
-        console.error('Error checking claim eligibility:', error);
+        if (error.message.includes('429') && retries < maxRetries - 1) {
+          const delay = Math.pow(2, retries) * 1000 + Math.random() * 1000;
+          console.log(`Retrying after ${delay}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          retries++;
+        } else {
+          throw error;
+        }
       }
     }
   };
-  const [isClaimsInitialized, setIsClaimsInitialized] = useState(false);
+
+  const fetchData = useCallback(async () => {
+    if (!program || !prediction) return;
+
+    setIsLoading(true);
+    try {
+      const updatedPrediction = await fetchWithRetry(() => 
+        program.account.prediction.fetch(prediction.publicKey)
+      );
+
+      // Update the prediction data
+      onPredict(prediction.publicKey, updatedPrediction.result, 0); // Assuming onPredict can handle updates
+
+      setPendingClaims(updatedPrediction.pendingClaims || []);
+      setIsPredictionEnded(Date.now() / 1000 > Number(updatedPrediction.endTime));
+      // checkRewardsDistributed(updatedPrediction);
+      // checkClaimEligibility(updatedPrediction);
+    } catch (error) {
+      console.error("Error fetching prediction data:", error);
+      setError('Failed to fetch updated prediction data');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [program, prediction, onPredict]);
+  useEffect(() => {
+    const currentTime = Math.floor(Date.now() / 1000);
+    const endTime = prediction.account.endTime.toNumber(); // Convert BN to number
+    const isPredictionEnded = currentTime > endTime;
+    console.log('Current time:', currentTime);
+    console.log('End time:', endTime);
+    console.log('Is prediction ended:', isPredictionEnded);
+    setIsPredictionEnded(isPredictionEnded);
+  }, [prediction.account.endTime]);
+  // useEffect(() => {
+  //   fetchData();
+  //   const intervalId = setInterval(fetchData, 30000); // Fetch every 30 seconds
+
+  //   return () => clearInterval(intervalId);
+  // }, [fetchData]);
+
+  const checkRewardsDistributed = useCallback((predictionData) => {
+    setRewardsDistributed(predictionData.rewardsDistributed);
+  }, []);
+
+  // const checkClaimEligibility = useCallback(async (predictionData) => {
+  //   if (wallet.publicKey && 'resolved' in predictionData.state) {
+  //     try {
+  //       const [userPredictionPDA] = await PublicKey.findProgramAddress(
+  //         [
+  //           Buffer.from("user_prediction"),
+  //           prediction.publicKey.toBuffer(),
+  //           wallet.publicKey.toBuffer(),
+  //         ],
+  //         program.programId
+  //       );
+
+  //       const userPredictionAccount = await program.account.userPrediction.fetch(userPredictionPDA);
+
+  //       const predictionResult = 'true' in predictionData.result ? true : 
+  //                                'false' in predictionData.result ? false : 
+  //                                null;
+
+  //       const isWinner = predictionResult !== null && userPredictionAccount.verdict === predictionResult;
+        
+  //       setCanClaim(isWinner && !userPredictionAccount.rewardClaimed && predictionData.rewardsDistributed);
+  //     } catch (error) {
+  //       console.error('Error checking claim eligibility:', error);
+  //       setCanClaim(false);
+  //     }
+  //   } else {
+  //     setCanClaim(false);
+  //   }
+  // }, [wallet.publicKey, prediction, program]);
+
+
+
+
+  const handleFinalize = async (useAI = false) => {
+    if (!wallet.publicKey) return;
+    try {
+      setIsAIFinalizing(true);
+      if (useAI) {
+        const response = await axios.post(`${process.env.NEXT_PUBLIC_SERVER_URL}/finalize-prediction/${prediction.account.id}`);
+        setModalData(response.data);
+      } else {
+        setModalData({ adminFinalize: true });
+      }
+      setIsModalOpen(true);
+    } catch (error) {
+      console.error('Error preparing finalization data:', error);
+      toast.error('Failed to prepare finalization data: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    } finally {
+      setIsAIFinalizing(false);
+    }
+  };
+  const findCorrectPrediction = (id: string) => {
+    return allPredictions.find(p => p.account.id.toString() === id);
+  };
+
+  const executeFinalization = async (finalOutcome: boolean) => {
+    if (!wallet.publicKey) return;
+    setIsExecutingFinalization(true);
+    try {
+      // Use the actual public key of the prediction account
+      const predictionPublicKey = prediction.publicKey;
+
+      console.log('Finalizing prediction:', predictionPublicKey.toBase58());
+      console.log('Market State:', MARKET_STATE_PUBKEY.toBase58());
+      console.log('Admin:', wallet.publicKey.toBase58());
+
+      const tx = await program.methods
+        .resolvePrediction({ [finalOutcome ? 'true' : 'false']: {} })
+        .accounts({
+          marketState: MARKET_STATE_PUBKEY,
+          prediction: predictionPublicKey,
+          admin: wallet.publicKey,
+        })
+        .rpc();
+
+      await program.provider.connection.confirmTransaction(tx, "confirmed");
+      console.log(`Prediction finalized with transaction signature:`, tx);
+      toast.success('Prediction finalized successfully');
+      setIsModalOpen(false);
+      // You might want to refresh the prediction data here or trigger a callback
+    } catch (error) {
+      console.error('Error finalizing prediction:', error);
+      if (error instanceof Error) {
+        toast.error(`Failed to finalize prediction: ${error.message}`);
+      } else {
+        toast.error('An unknown error occurred while finalizing the prediction');
+      }
+    } finally {
+      setIsExecutingFinalization(false);
+    }
+  };
+  const FinalizeModal = () => (
+    <AnimatePresence>
+      {isModalOpen && (
+        <motion.div
+          className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+        >
+          <motion.div
+            className="bg-white dark:bg-navy-800 rounded-lg p-6 w-full dark:text-white max-w-md"
+            initial={{ scale: 0.9, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            exit={{ scale: 0.9, opacity: 0 }}
+          >
+            <h2 className="text-2xl font-bold mb-4">Finalize Prediction</h2>
+            <p className="mb-4">{prediction.account.description}</p>
+            {modalData && modalData.aiOutcome && (
+              <div className="mb-4">
+                <p className="font-semibold">AI Recommendation:</p>
+                <p>{modalData.aiOutcome.outcome ? 'Yes' : 'No'} (Confidence: {modalData.aiOutcome.confidence})</p>
+                <p className="text-sm mt-2">{modalData.aiOutcome.explanation}</p>
+              </div>
+            )}
+            <div className="flex justify-between mb-4">
+              <button
+                onClick={() => executeFinalization(true)}
+                className="bg-green-500 text-white px-4 py-2 rounded"
+                disabled={isExecutingFinalization}
+              >
+                Finalize as Yes
+              </button>
+              <button
+                onClick={() => executeFinalization(false)}
+                className="bg-red-500 text-white px-4 py-2 rounded"
+                disabled={isExecutingFinalization}
+              >
+                Finalize as No
+              </button>
+            </div>
+            <button
+              onClick={() => setIsModalOpen(false)}
+              className="w-full bg-gray-300 text-gray-800 px-4 py-2 rounded"
+              disabled={isExecutingFinalization}
+            >
+              Cancel
+            </button>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+
+
+
+
+
+
+
+
+
+  const [predictionPublicKey, setPredictionPublicKey] = useState<PublicKey | null>(null);
+
+  useEffect(() => {
+    if (prediction && prediction.publicKey) {
+      setPredictionPublicKey(prediction.publicKey);
+    }
+  }, [prediction]);
+
+  const handleRequestClaim = async () => {
+    if (!wallet.publicKey) {
+      toast.error('Wallet not connected');
+      return;
+    }
+  
+    setIsLoading(true);
+    setError(null);
+    try {
+      console.log('Requesting claim for prediction:', prediction.publicKey.toBase58());
+      const [userPredictionPDA] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("user_prediction"),
+          prediction.publicKey.toBuffer(),
+          wallet.publicKey.toBuffer(),
+        ],
+        program.programId
+      );
+  
+      console.log('User Prediction PDA:', userPredictionPDA.toBase58());
+  
+      const tx = await program.methods
+        .requestClaim()
+        .accounts({
+          prediction: prediction.publicKey,
+          userPrediction: userPredictionPDA,
+          user: wallet.publicKey,
+        })
+        .rpc();
+  
+      await program.provider.connection.confirmTransaction(tx, "confirmed");
+      console.log("Claim requested:", tx);
+      toast.success('Claim request submitted successfully');
+      
+      // Refresh prediction data
+      const updatedPrediction = await program.account.prediction.fetch(prediction.publicKey);
+      console.log('Updated prediction:', updatedPrediction);
+      
+      // Correctly check the result
+      const result = 'true' in updatedPrediction.result ? true :
+                     'false' in updatedPrediction.result ? false :
+                     null;
+      
+      // Update the prediction using the onPredict prop
+      onPredict(prediction.publicKey, result, 0);
+  
+      // Update pending claims
+      setPendingClaims(updatedPrediction.pendingClaims || []);
+  
+    } catch (error) {
+      console.error('Detailed error:', error);
+      if (error instanceof Error) {
+        setError(`Failed to request claim: ${error.message}`);
+        toast.error(`Failed to request claim: ${error.message}`);
+      } else {
+        setError('An unknown error occurred while requesting the claim');
+        toast.error('An unknown error occurred while requesting the claim');
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // For admin
+  const handleApproveClaim = async (user: PublicKey, amount: BN, shares: BN) => {
+    if (!wallet.publicKey) {
+      toast.error('Wallet not connected');
+      return;
+    }
+  
+    if (!isAdmin) {
+      toast.error('Not authorized to approve claims');
+      return;
+    }
+  
+    setIsLoading(true);
+    setError(null);
+  
+    try {
+      console.log('Admin wallet:', wallet.publicKey.toBase58());
+      console.log('User wallet:', user.toBase58());
+      console.log('Amount to transfer:', amount.toString());
+  
+      const connection = new Connection(clusterApiUrl("devnet"), 'confirmed');
+  
+      const transaction = new Transaction().add(
+        SystemProgram.transfer({
+          fromPubkey: wallet.publicKey,
+          toPubkey: user,
+          lamports: Number(amount),
+        })
+      );
+
+      const tx = await program.methods
+      .approveClaim(user, new BN(amount.toString()), new BN(shares.toString()))
+      .accounts({
+        prediction: prediction.publicKey,
+        admin: wallet.publicKey,
+        user: user,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc();
+
+    await program.provider.connection.confirmTransaction(tx, "confirmed");
+
+    
+  
+      const signature = await wallet.sendTransaction(transaction, connection);
+      await connection.confirmTransaction(signature, 'confirmed');
+  
+      console.log('Transfer successful:', signature);
+      toast.success('Claim approved and paid out successfully');
+  
+      // Remove the approved claim from pendingClaims
+      setPendingClaims(prevClaims => prevClaims.filter(claim => !claim.user.equals(user)));
+  
+      // You might want to update the prediction data here
+      // This depends on how you want to handle the state after a manual transfer
+      // For example:
+      // await fetchData();
+  
+    } catch (error) {
+      console.error('Error approving claim:', error);
+      if (error instanceof Error) {
+        setError(`Failed to approve claim: ${error.message}`);
+        toast.error(`Failed to approve claim: ${error.message}`);
+      } else {
+        setError('An unknown error occurred while approving the claim');
+        toast.error('An unknown error occurred while approving the claim');
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  };
+  const handleClaim = async () => {
+    if (!wallet.publicKey) {
+      toast.error('Wallet not connected');
+      return;
+    }
+  
+    setIsLoading(true);
+    setError(null);
+    try {
+      console.log('Market State PublicKey:', MARKET_STATE_PUBKEY.toBase58());
+      console.log('Prediction ID:', prediction.account.id);
+      console.log('User PublicKey:', wallet.publicKey.toBase58());
+      console.log('Program ID:', program.programId.toBase58());
+  
+      const [predictionPDA] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("prediction"),
+          MARKET_STATE_PUBKEY.toBuffer(),
+          new BN(prediction.account.id).toArrayLike(Buffer, 'le', 8)
+        ],
+        program.programId
+      );
+  
+      console.log('Derived Prediction PDA:', predictionPDA.toBase58());
+  
+      const [userPredictionPDA] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("user_prediction"),
+          predictionPDA.toBuffer(),
+          wallet.publicKey.toBuffer(),
+        ],
+        program.programId
+      );
+  
+      console.log('Derived User Prediction PDA:', userPredictionPDA.toBase58());
+  
+      // Log the accounts being passed to the instruction
+      console.log('Accounts being passed to claimReward:');
+      console.log('- marketState:', MARKET_STATE_PUBKEY.toBase58());
+      console.log('- prediction:', predictionPDA.toBase58());
+      console.log('- userPrediction:', userPredictionPDA.toBase58());
+      console.log('- user:', wallet.publicKey.toBase58());
+      console.log('- systemProgram:', SystemProgram.programId.toBase58());
+  
+      const tx = await program.methods
+        .claimReward()
+        .accounts({
+          marketState: MARKET_STATE_PUBKEY,
+          prediction: predictionPDA,
+          userPrediction: userPredictionPDA,
+          user: wallet.publicKey,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc();
+  
+      // ... rest of the function
+    } catch (error) {
+      console.error('Detailed error:', error);
+      if (error instanceof Error) {
+        setError(`Failed to claim reward: ${error.message}`);
+      } else {
+        setError('An unknown error occurred while claiming the reward');
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+
   const checkClaimsInitialized = async () => {
+    if (!wallet.publicKey) return;
     try {
       const [claims] = await PublicKey.findProgramAddressSync(
         [Buffer.from("claims"), prediction.publicKey.toBuffer()],
@@ -89,7 +530,7 @@ const PredictionCard: React.FC<PredictionCardProps> = ({ prediction, onPredict, 
       console.error('Error checking if claims are initialized:', error);
     }
   };
-  
+
 
   const initializeClaims = async () => {
     if (!wallet.publicKey || !isAdmin) {
@@ -123,62 +564,8 @@ const PredictionCard: React.FC<PredictionCardProps> = ({ prediction, onPredict, 
     }
   };
 
-
-  const handleSubmitClaim = async () => {
-    if (!wallet.publicKey) {
-      toast.error('Wallet not connected');
-      return;
-    }
-
-    if (!isClaimsInitialized) {
-      toast.error('Claims not initialized. Please wait for admin to initialize.');
-      return;
-    }
-
-    try {
-      const [claims] = await PublicKey.findProgramAddressSync(
-        [Buffer.from("claims"), prediction.publicKey.toBuffer()],
-        program.programId
-      );
-
-      const [userPrediction] = await PublicKey.findProgramAddressSync(
-        [Buffer.from("user_prediction"), prediction.publicKey.toBuffer(), wallet.publicKey.toBuffer()],
-        program.programId
-      );
-
-      const tx = await program.methods
-        .submitClaim()
-        .accounts({
-          prediction: prediction.publicKey,
-          claims,
-          userPrediction,
-          user: wallet.publicKey,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
-
-      await program.provider.connection.confirmTransaction(tx, "confirmed");
-      console.log("Claim submitted:", tx);
-      toast.success('Claim submitted successfully');
-      setCanClaim(false);
-    } catch (error) {
-      console.error('Error submitting claim:', error);
-      if (error instanceof Error) {
-        if (error.message.includes('PredictionNotResolved')) {
-          toast.error('Failed to submit claim: Prediction not resolved yet');
-        } else if (error.message.includes('UserNotWinner')) {
-          toast.error('Failed to submit claim: You did not win this prediction');
-        } else {
-          toast.error(`Failed to submit claim: ${error.message}`);
-        }
-      } else {
-        toast.error('An unknown error occurred while submitting the claim');
-      }
-    }
-  };
-
-  const handleApproveClaims = async (claimIndices: number[]) => {
-    if (!wallet.publicKey) return;
+  const handleDistributeRewards = async () => {
+    if (!wallet.publicKey || !isAdmin) return;
     try {
       const [claims] = await PublicKey.findProgramAddressSync(
         [Buffer.from("claims"), prediction.publicKey.toBuffer()],
@@ -186,10 +573,10 @@ const PredictionCard: React.FC<PredictionCardProps> = ({ prediction, onPredict, 
       );
 
       const tx = await program.methods
-        .approveClaims(claimIndices)
+        .distributeRewards()
         .accounts({
-          marketState: new PublicKey("Gsmt7fBHxJcdzSy9M3tACdTBf66ku5iLrxgnjtUxt2An"),
           prediction: prediction.publicKey,
+          marketState: new PublicKey("CySirkQdQbfQzBj3Wgk1Qt7BRU25hV6DiSWxhi7xs9JL"),
           claims,
           admin: wallet.publicKey,
           systemProgram: SystemProgram.programId,
@@ -197,35 +584,44 @@ const PredictionCard: React.FC<PredictionCardProps> = ({ prediction, onPredict, 
         .rpc();
 
       await program.provider.connection.confirmTransaction(tx, "confirmed");
-      console.log("Claims approved:", tx);
-      toast.success('Claims approved successfully');
-      fetchPendingClaims();
+      console.log("Rewards distributed:", tx);
+      toast.success('Rewards distributed successfully');
+      setRewardsDistributed(true);
     } catch (error) {
-      console.error('Error approving claims:', error);
-      toast.error('Failed to approve claims');
-    }
-  };
-
-  const fetchPendingClaims = async () => {
-    try {
-      const [claims] = await PublicKey.findProgramAddressSync(
-        [Buffer.from("claims"), prediction.publicKey.toBuffer()],
-        program.programId
-      );
-      const claimsAccount = await program.account.claims.fetch(claims);
-      setClaimsToApprove(claimsAccount.pendingClaims);
-    } catch (error) {
-      console.error('Error fetching pending claims:', error);
+      console.error('Error distributing rewards:', error);
+      toast.error('Failed to distribute rewards');
     }
   };
 
 
   const fetchSolPrice = async () => {
     try {
-      const response = await axios.get('https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd');
-      setSolPrice(response.data.solana.usd);
+      const response = await axios.get(`https://hermes.pyth.network/api/latest_price_feeds?ids[]=${PYTH_SOL_PRICE_FEED_ID}`);
+      
+      if (response.data && response.data.length > 0) {
+        const priceData = response.data[0].price;
+        if (priceData) {
+          const price = Number(priceData.price) * Math.pow(10, priceData.expo);
+          console.log('SOL price from Pyth:', price);
+          setSolPrice(price);
+        } else {
+          throw new Error('Invalid price data from Pyth');
+        }
+      } else {
+        throw new Error('No data received from Pyth');
+      }
     } catch (error) {
-      console.error('Error fetching SOL price:', error);
+      console.error('Error fetching SOL price from Pyth:', error);
+      // Fallback to CoinGecko API
+      try {
+        const response = await axios.get('https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd');
+        setSolPrice(response.data.solana.usd);
+        console.log('SOL price from CoinGecko fallback:', response.data.solana.usd);
+      } catch (fallbackError) {
+        console.error('Error fetching SOL price from fallback:', fallbackError);
+        // If both fail, we could set a default price or show an error to the user
+        setSolPrice(0);
+      }
     }
   };
 
@@ -268,11 +664,11 @@ const PredictionCard: React.FC<PredictionCardProps> = ({ prediction, onPredict, 
       toast.error('Wallet not connected');
       return;
     }
-
+  
     try {
       const amount = new BN(shareAmount * LAMPORTS_PER_SOL);
-
-      const [userPrediction] = await PublicKey.findProgramAddress(
+  
+      const [userPredictionPDA] = PublicKey.findProgramAddressSync(
         [
           Buffer.from("user_prediction"),
           prediction.publicKey.toBuffer(),
@@ -280,18 +676,18 @@ const PredictionCard: React.FC<PredictionCardProps> = ({ prediction, onPredict, 
         ],
         program.programId
       );
-
+  
       const tx = await program.methods
         .predict(isYesSelected, amount)
         .accounts({
-          marketState: new PublicKey("Gsmt7fBHxJcdzSy9M3tACdTBf66ku5iLrxgnjtUxt2An"),
+          marketState: MARKET_STATE_PUBKEY,
           prediction: prediction.publicKey,
           user: wallet.publicKey,
-          userPrediction: userPrediction,
+          userPrediction: userPredictionPDA,
           systemProgram: SystemProgram.programId,
         })
         .rpc();
-
+  
       await program.provider.connection.confirmTransaction(tx, "confirmed");
       console.log("Prediction transaction confirmed:", tx);
       toast.success('Prediction made successfully');
@@ -312,145 +708,34 @@ const PredictionCard: React.FC<PredictionCardProps> = ({ prediction, onPredict, 
     }
   };
 
-  const handleFinalize = async (useAI = false) => {
-    if (!wallet.publicKey) return;
+  const getPredictionDetails = async (predictionId: string) => {
     try {
-      let finalOutcome;
-      if (useAI) {
-        setIsAIFinalizing(true);
-        try {
-          const response = await axios.post(`${process.env.NEXT_PUBLIC_SERVER_URL}/finalize-prediction/${prediction.account.id}`);
-          finalOutcome = response.data.outcome;
-        } catch (error) {
-          console.error('Error finalizing with AI:', error);
-          setIsAIFinalizing(false);
-          return;
-        }
-      } else {
-        finalOutcome = outcome;
-      }
+      console.log(`Fetching details for prediction ID: ${predictionId}`);
+      console.log(`Using MARKET_STATE_PUBKEY: ${MARKET_STATE_PUBKEY.toBase58()}`);
+      console.log(`Using PROGRAM_ID: ${program.programId.toBase58()}`);
 
-      const tx = await program.methods
-        .resolvePrediction({ [finalOutcome ? 'true' : 'false']: {} })
-        .accounts({
-          marketState: new PublicKey("Gsmt7fBHxJcdzSy9M3tACdTBf66ku5iLrxgnjtUxt2An"),
-          prediction: prediction.publicKey,
-          admin: wallet.publicKey,
-        })
-        .rpc();
-
-      await program.provider.connection.confirmTransaction(tx, "confirmed");
-      console.log(`Prediction finalized ${useAI ? 'with AI' : 'by admin'}`);
-      toast.success('Prediction finalized successfully');
-    } catch (error) {
-      console.error('Error finalizing prediction:', error);
-      toast.error('Failed to finalize prediction');
-    } finally {
-      setIsAIFinalizing(false);
-    }
-  };
-
-  const handleClaim = async () => {
-    if (!wallet.publicKey) {
-      toast.error('Wallet not connected');
-      return;
-    }
-  
-    try {
-      const [claims] = await PublicKey.findProgramAddressSync(
-        [Buffer.from("claims"), prediction.publicKey.toBuffer()],
-        program.programId
-      );
-  
-      const [userPrediction] = await PublicKey.findProgramAddressSync(
-        [Buffer.from("user_prediction"), prediction.publicKey.toBuffer(), wallet.publicKey.toBuffer()],
-        program.programId
-      );
-  
-      const tx = await program.methods
-        .claimReward()
-        .accounts({
-          prediction: prediction.publicKey,
-          userPrediction: userPrediction,
-          user: wallet.publicKey,
-          claims: claims,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
-  
-      await program.provider.connection.confirmTransaction(tx, "confirmed");
-      console.log("Reward claimed:", tx);
-      toast.success('Reward claimed successfully');
-      setCanClaim(false);
-    } catch (error) {
-      console.error('Error claiming reward:', error);
-      if (error instanceof Error) {
-        if (error.message.includes('PredictionNotResolved')) {
-          toast.error('Failed to claim reward: Prediction not resolved yet');
-        } else if (error.message.includes('UserNotWinner')) {
-          toast.error('Failed to claim reward: You did not win this prediction');
-        } else if (error.message.includes('RewardsNotDistributed')) {
-          toast.error('Failed to claim reward: Rewards have not been distributed yet');
-        } else if (error.message.includes('AlreadyClaimed')) {
-          toast.error('Failed to claim reward: You have already claimed your reward');
-        } else {
-          toast.error(`Failed to claim reward: ${error.message}`);
-        }
-      } else {
-        toast.error('An unknown error occurred while claiming the reward');
-      }
-    }
-  };
-  
-  const handleDistributeRewards = async () => {
-    if (!wallet.publicKey) return;
-    try {
-      const [claims] = await PublicKey.findProgramAddressSync(
-        [Buffer.from("claims"), prediction.publicKey.toBuffer()],
+      const [predictionPDA] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("prediction"),
+          MARKET_STATE_PUBKEY.toBuffer(),
+          new BN(predictionId).toArrayLike(Buffer, 'le', 8)
+        ],
         program.programId
       );
 
-      // Check if the claims account exists
-      const claimsAccount = await program.provider.connection.getAccountInfo(claims);
+      console.log("Derived Prediction PDA:", predictionPDA.toBase58());
 
-      if (!claimsAccount) {
-        // If the claims account doesn't exist, we need to initialize it
-        console.log("Claims account doesn't exist. Initializing...");
-        const initTx = await program.methods
-          .initializeClaims()
-          .accounts({
-            prediction: prediction.publicKey,
-            claims,
-            admin: wallet.publicKey,
-            systemProgram: SystemProgram.programId,
-          })
-          .rpc();
-
-        await program.provider.connection.confirmTransaction(initTx, "confirmed");
-        console.log("Claims account initialized:", initTx);
-      }
-
-      const tx = await program.methods
-        .distributeRewards()
-        .accounts({
-          prediction: prediction.publicKey,
-          marketState: new PublicKey("Gsmt7fBHxJcdzSy9M3tACdTBf66ku5iLrxgnjtUxt2An"),
-          claims,
-          admin: wallet.publicKey,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
-
-      await program.provider.connection.confirmTransaction(tx, "confirmed");
-      console.log("Rewards distributed:", tx);
-      toast.success('Rewards distributed successfully');
-      setClaimsPending(true);
-      fetchPendingClaims();
+      // Fetch the prediction account data
+      const predictionAccount = await program.account.prediction.fetch(predictionPDA);
+      
+      console.log("Prediction Details:", JSON.stringify(predictionAccount, null, 2));
+      return { publicKey: predictionPDA, account: predictionAccount };
     } catch (error) {
-      console.error('Error distributing rewards:', error);
-      toast.error('Failed to distribute rewards');
+      console.error("Error in getPredictionDetails:", error);
+      throw new Error(`Failed to get prediction details: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   };
+
 
 
 
@@ -611,61 +896,21 @@ const PredictionCard: React.FC<PredictionCardProps> = ({ prediction, onPredict, 
 
 
 
-      {isResolved && (
+
+      {isAdmin && isResolved && isClaimsInitialized && !rewardsDistributed && (
         <div className="p-6 bg-gray-50 dark:bg-navy-900 border-t border-gray-200 dark:border-navy-700">
-          {isAdmin && !isClaimsInitialized && (
-            <motion.button 
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              onClick={initializeClaims}
-              className="w-full bg-blue-500 text-white rounded-lg py-2 px-4 text-sm font-medium flex items-center justify-center mb-4"
-            >
-              <IoAdd className="mr-2" /> Initialize Claims
-            </motion.button>
-          )}
-          {canClaim && (
-            <motion.button 
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              onClick={handleSubmitClaim}
-              disabled={!isClaimsInitialized}
-              className={`w-full ${isClaimsInitialized ? 'bg-green-500' : 'bg-gray-400'} text-white rounded-lg py-2 px-4 text-sm font-medium flex items-center justify-center`}
-            >
-              <IoCash className="mr-2" /> Submit Claim
-            </motion.button>
-          )}
+          <motion.button 
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            onClick={handleDistributeRewards}
+            className="w-full bg-green-500 text-white rounded-lg py-2 px-4 text-sm font-medium flex items-center justify-center"
+          >
+            <IoCash className="mr-2" /> Distribute Rewards
+          </motion.button>
         </div>
       )}
 
-      {isAdmin && isResolved && (
-        <div className="p-6 bg-gray-50 dark:bg-navy-900 border-t border-gray-200 dark:border-navy-700">
-          <button 
-            onClick={fetchPendingClaims}
-            className="w-full bg-blue-500 text-white rounded-lg py-2 px-4 text-sm font-medium flex items-center justify-center mb-4"
-          >
-            <IoRefresh className="mr-2" /> Refresh Pending Claims
-          </button>
-          {claimsToApprove.length > 0 && (
-            <div>
-              <h3 className="text-lg font-semibold mb-2">Pending Claims</h3>
-              {claimsToApprove.map((claim, index) => (
-                <div key={index} className="flex justify-between items-center mb-2">
-                  <span>{claim.user.toString().slice(0, 8)}...</span>
-                  <span>{formatSol(claim.amount)} SOL</span>
-                  <motion.button
-                    whileHover={{ scale: 1.05 }}
-                    whileTap={{ scale: 0.95 }}
-                    onClick={() => handleApproveClaims([index])}
-                    className="bg-green-500 text-white rounded-lg py-1 px-3 text-sm font-medium"
-                  >
-                    Approve
-                  </motion.button>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
+      
 
 
       {isActive && !isPredictionEnded && (
@@ -735,8 +980,51 @@ const PredictionCard: React.FC<PredictionCardProps> = ({ prediction, onPredict, 
           </motion.button>
         </div>
       )}
+{/*  {isResolved && rewardsDistributed && canClaim && (
+        <div className="p-6 bg-gray-50 dark:bg-navy-900 border-t border-gray-200 dark:border-navy-700">
+          <motion.button 
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            onClick={handleClaim}
+            className="w-full bg-green-500 text-white rounded-lg py-2 px-4 text-sm font-medium flex items-center justify-center"
+          >
+            <IoCash className="mr-2" /> Claim Reward
+          </motion.button>
+        </div>
+      )} */}
 
+{isResolved && !isAdmin && (
+        <div className="p-6 bg-gray-50 dark:bg-navy-900 border-t border-gray-200 dark:border-navy-700">
+          <motion.button 
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            onClick={handleRequestClaim}
+            className="w-full bg-green-500 text-white rounded-lg py-2 px-4 text-sm font-medium flex items-center justify-center"
+          >
+            <IoCash className="mr-2" /> Request Claim
+          </motion.button>
+        </div>
+      )}
 
+{isAdmin  && pendingClaims.length > 0 && (
+        <div className="p-6 bg-gray-50 dark:bg-navy-900 dark:text-white border-t border-gray-200 dark:border-navy-700">
+          <h3 className="text-lg font-semibold mb-4">Pending Claims</h3>
+          {pendingClaims.map((claim, index) => (
+            <div key={index} className="flex justify-between items-center mb-2">
+              <span>{claim.user.toString().slice(0, 8)}...</span>
+              <span>{claim.shares} SOL</span>
+              <motion.button
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                onClick={() => handleApproveClaim(claim.user, claim.shares * 1e9, claim.shares)}
+                className="bg-blue-500 text-white rounded-lg py-1 px-3 text-sm font-medium"
+              >
+                Approve
+              </motion.button>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* {isAdmin && isResolved && (
         <div className="p-6 bg-gray-50 dark:bg-navy-900 border-t border-gray-200 dark:border-navy-700">
@@ -768,49 +1056,38 @@ const PredictionCard: React.FC<PredictionCardProps> = ({ prediction, onPredict, 
         </div>
       )} */}
 
-      {isAdmin && isActive && isPredictionEnded && (
-        <div className="p-6 bg-gray-50 dark:bg-navy-900 border-t border-gray-200 dark:border-navy-700">
-          <div className="flex flex-col space-y-3">
-            <div className="flex items-center space-x-2">
-              <select 
-                value={outcome}
-                onChange={(e) => setOutcome(parseInt(e.target.value))}
-                className="flex-grow p-2 border rounded dark:bg-navy-700 dark:border-navy-600 text-sm"
-              >
-                <option value={0}>Yes</option>
-                <option value={1}>No</option>
-              </select>
-              <motion.button 
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
-                onClick={() => handleFinalize(false)}
-                className="bg-blue-500 text-white rounded-lg py-2 px-4 text-sm font-medium flex items-center"
-              >
-                <IoCheckmark className="mr-1" /> Admin Finalize
-              </motion.button>
-            </div>
-            <motion.button 
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              onClick={() => handleFinalize(true)}
-              disabled={isAIFinalizing}
-              className="w-full bg-purple-500 text-white rounded-lg py-2 px-4 text-sm font-medium flex items-center justify-center"
-            >
-              {isAIFinalizing ? (
-                <>
-                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
-                  Finalizing with AI...
-                </>
-              ) : (
-                <>
-                  <IoBulb className="mr-2" /> Finalize with AI
-                </>
-              )}
-            </motion.button>
-          </div>
-        </div>
-      )}
-
+{isAdmin && isActive && isPredictionEnded && (
+    <div className="p-6 bg-gray-50 dark:bg-navy-900 border-t border-gray-200 dark:border-navy-700">
+      <div className="flex flex-col space-y-3">
+        <motion.button 
+          whileHover={{ scale: 1.05 }}
+          whileTap={{ scale: 0.95 }}
+          onClick={() => handleFinalize(false)}
+          className="w-full bg-blue-500 text-white rounded-lg py-2 px-4 text-sm font-medium flex items-center justify-center"
+        >
+          <IoCheckmark className="mr-2" /> Admin Finalize
+        </motion.button>
+        <motion.button 
+          whileHover={{ scale: 1.05 }}
+          whileTap={{ scale: 0.95 }}
+          onClick={() => handleFinalize(true)}
+          disabled={isAIFinalizing}
+          className="w-full bg-purple-500 text-white rounded-lg py-2 px-4 text-sm font-medium flex items-center justify-center"
+        >
+          {isAIFinalizing ? (
+            <>
+              <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+              Preparing AI Finalization...
+            </>
+          ) : (
+            <>
+              <IoBulb className="mr-2" /> Finalize with AI
+            </>
+          )}
+        </motion.button>
+      </div>
+    </div>
+  )}
       {isAdmin && isActive && (
         <div className="p-6 bg-gray-50 dark:bg-navy-900 border-t border-gray-200 dark:border-navy-700">
           <motion.button 
@@ -824,7 +1101,7 @@ const PredictionCard: React.FC<PredictionCardProps> = ({ prediction, onPredict, 
         </div>
       )}
 
-{isAdmin && isResolved && (
+{/* {isAdmin && isResolved && (
         <div className="p-6 bg-gray-50 dark:bg-navy-900 border-t border-gray-200 dark:border-navy-700">
           <motion.button 
             whileHover={{ scale: 1.05 }}
@@ -854,7 +1131,7 @@ const PredictionCard: React.FC<PredictionCardProps> = ({ prediction, onPredict, 
             </div>
           )}
         </div>
-      )}
+      )} */}
 
       {isActive && isPredictionEnded && !isAdmin && (
         <div className="p-6 bg-gray-50 dark:bg-navy-900 border-t border-gray-200 dark:border-navy-700">
@@ -881,6 +1158,8 @@ const PredictionCard: React.FC<PredictionCardProps> = ({ prediction, onPredict, 
           </div>
         </div>
       )}
+        <FinalizeModal />
+
     </motion.div>
   );
 };
