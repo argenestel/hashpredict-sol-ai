@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 
-declare_id!("6JyW3ZzjMpm7eHwL1y3ZWYgXLkf7Q6DP9BYfDsswryhT");
+declare_id!("J4bMC3qvhsjSDJojvVGUt1tzvm6xzk6R2hhUnwDSzH7s");
 
 #[program]
 pub mod prediction_marketplace {
@@ -10,6 +10,15 @@ pub mod prediction_marketplace {
         let market_state = &mut ctx.accounts.market_state;
         market_state.admin = ctx.accounts.admin.key();
         market_state.next_prediction_id = 0;
+        Ok(())
+    }
+
+    pub fn initialize_claims(ctx: Context<InitializeClaims>) -> Result<()> {
+        let claims = &mut ctx.accounts.claims;
+        claims.prediction = ctx.accounts.prediction.key();
+        claims.reward_per_lamport = 0;
+        claims.total_reward_pool = 0;
+        claims.pending_claims = Vec::new();
         Ok(())
     }
 
@@ -24,17 +33,26 @@ pub mod prediction_marketplace {
         let market_state = &mut ctx.accounts.market_state;
         let prediction = &mut ctx.accounts.prediction;
 
-        require!(ctx.accounts.admin.key() == market_state.admin, PredictionError::NotAuthorized);
+        require!(
+            ctx.accounts.admin.key() == market_state.admin,
+            PredictionError::NotAuthorized
+        );
         require!(duration > 0, PredictionError::InvalidDuration);
 
         let prediction_id = market_state.next_prediction_id;
-        market_state.next_prediction_id = market_state.next_prediction_id.checked_add(1).ok_or(PredictionError::Overflow)?;
+        market_state.next_prediction_id = market_state
+            .next_prediction_id
+            .checked_add(1)
+            .ok_or(PredictionError::Overflow)?;
 
         prediction.id = prediction_id;
         prediction.state = PredictionState::Active;
         prediction.description = description;
         prediction.start_time = Clock::get()?.unix_timestamp;
-        prediction.end_time = prediction.start_time.checked_add(duration).ok_or(PredictionError::Overflow)?;
+        prediction.end_time = prediction
+            .start_time
+            .checked_add(duration)
+            .ok_or(PredictionError::Overflow)?;
         prediction.total_votes = 0;
         prediction.yes_votes = 0;
         prediction.no_votes = 0;
@@ -55,17 +73,19 @@ pub mod prediction_marketplace {
         Ok(())
     }
 
-    pub fn predict(
-        ctx: Context<Predict>,
-        verdict: bool,
-        amount: u64,
-    ) -> Result<()> {
+    pub fn predict(ctx: Context<Predict>, verdict: bool, amount: u64) -> Result<()> {
         let prediction = &mut ctx.accounts.prediction;
         let user = &ctx.accounts.user;
         let user_prediction = &mut ctx.accounts.user_prediction;
 
-        require!(prediction.state == PredictionState::Active, PredictionError::PredictionNotActive);
-        require!(Clock::get()?.unix_timestamp < prediction.end_time, PredictionError::PredictionEnded);
+        require!(
+            prediction.state == PredictionState::Active,
+            PredictionError::PredictionNotActive
+        );
+        require!(
+            Clock::get()?.unix_timestamp < prediction.end_time,
+            PredictionError::PredictionEnded
+        );
         require!(amount > 0, PredictionError::InvalidAmount);
 
         // Transfer SOL from user to market account
@@ -78,16 +98,34 @@ pub mod prediction_marketplace {
         );
         anchor_lang::system_program::transfer(cpi_context, amount)?;
 
-        prediction.total_votes = prediction.total_votes.checked_add(1).ok_or(PredictionError::Overflow)?;
+        prediction.total_votes = prediction
+            .total_votes
+            .checked_add(1)
+            .ok_or(PredictionError::Overflow)?;
         if verdict {
-            prediction.yes_votes = prediction.yes_votes.checked_add(1).ok_or(PredictionError::Overflow)?;
-            prediction.yes_amount = prediction.yes_amount.checked_add(amount).ok_or(PredictionError::Overflow)?;
+            prediction.yes_votes = prediction
+                .yes_votes
+                .checked_add(1)
+                .ok_or(PredictionError::Overflow)?;
+            prediction.yes_amount = prediction
+                .yes_amount
+                .checked_add(amount)
+                .ok_or(PredictionError::Overflow)?;
         } else {
-            prediction.no_votes = prediction.no_votes.checked_add(1).ok_or(PredictionError::Overflow)?;
-            prediction.no_amount = prediction.no_amount.checked_add(amount).ok_or(PredictionError::Overflow)?;
+            prediction.no_votes = prediction
+                .no_votes
+                .checked_add(1)
+                .ok_or(PredictionError::Overflow)?;
+            prediction.no_amount = prediction
+                .no_amount
+                .checked_add(amount)
+                .ok_or(PredictionError::Overflow)?;
         }
 
-        prediction.total_amount = prediction.total_amount.checked_add(amount).ok_or(PredictionError::Overflow)?;
+        prediction.total_amount = prediction
+            .total_amount
+            .checked_add(amount)
+            .ok_or(PredictionError::Overflow)?;
 
         user_prediction.user = user.key();
         user_prediction.prediction_id = prediction.id;
@@ -103,14 +141,26 @@ pub mod prediction_marketplace {
 
         Ok(())
     }
-    
-    pub fn resolve_prediction(ctx: Context<ResolvePrediction>, result: PredictionResult) -> Result<()> {
+
+    pub fn resolve_prediction(
+        ctx: Context<ResolvePrediction>,
+        result: PredictionResult,
+    ) -> Result<()> {
         let market_state = &ctx.accounts.market_state;
         let prediction = &mut ctx.accounts.prediction;
 
-        require!(ctx.accounts.admin.key() == market_state.admin, PredictionError::NotAuthorized);
-        require!(prediction.state != PredictionState::Resolved, PredictionError::PredictionAlreadyResolved);
-        require!(result != PredictionResult::Undefined, PredictionError::InvalidResult);
+        require!(
+            ctx.accounts.admin.key() == market_state.admin,
+            PredictionError::NotAuthorized
+        );
+        require!(
+            prediction.state != PredictionState::Resolved,
+            PredictionError::PredictionAlreadyResolved
+        );
+        require!(
+            result != PredictionResult::Undefined,
+            PredictionError::InvalidResult
+        );
 
         prediction.result = result;
         prediction.state = PredictionState::Resolved;
@@ -123,30 +173,15 @@ pub mod prediction_marketplace {
         Ok(())
     }
 
-    pub fn register_user(ctx: Context<RegisterUser>, alias: String) -> Result<()> {
-        require!(alias.len() <= MAX_ALIAS_LENGTH, PredictionError::AliasTooLong);
-
-        let user_account = &mut ctx.accounts.user_account;
-        user_account.alias = alias;
-        user_account.reputation = INITIAL_REPUTATION;
-        user_account.rank = 0;
-        user_account.total_predictions = 0;
-        user_account.correct_predictions = 0;
-
-        emit!(RegisterEvent {
-            user_address: ctx.accounts.user.key(),
-            alias: user_account.alias.clone(),
-        });
-
-        Ok(())
-    }
-
     pub fn submit_claim(ctx: Context<SubmitClaim>) -> Result<()> {
         let prediction = &ctx.accounts.prediction;
-        let claim = &mut ctx.accounts.claim;
+        let claims = &mut ctx.accounts.claims;
         let user_prediction = &ctx.accounts.user_prediction;
 
-        require!(prediction.state == PredictionState::Resolved, PredictionError::PredictionNotResolved);
+        require!(
+            prediction.state == PredictionState::Resolved,
+            PredictionError::PredictionNotResolved
+        );
 
         let is_winner = match prediction.result {
             PredictionResult::True => user_prediction.verdict,
@@ -156,56 +191,15 @@ pub mod prediction_marketplace {
 
         require!(is_winner, PredictionError::UserNotWinner);
 
-        claim.user = ctx.accounts.user.key();
-        claim.prediction_id = prediction.id;
-        claim.amount = user_prediction.amount;
-        claim.state = ClaimState::Pending;
+        let reward_amount = (user_prediction.amount * claims.reward_per_lamport) / 1_000_000;
 
-        emit!(ClaimSubmittedEvent {
-            prediction_id: prediction.id,
+        claims.pending_claims.push(Claim {
             user: ctx.accounts.user.key(),
-            amount: user_prediction.amount,
+            amount: reward_amount,
+            state: ClaimState::Pending,
         });
 
-        Ok(())
-    }
-
-    pub fn approve_claim(ctx: Context<ApproveClaim>) -> Result<()> {
-        let market_state = &ctx.accounts.market_state;
-        let prediction = &ctx.accounts.prediction;
-        let claim = &mut ctx.accounts.claim;
-
-        require!(ctx.accounts.admin.key() == market_state.admin, PredictionError::NotAuthorized);
-        require!(claim.state == ClaimState::Pending, PredictionError::ClaimNotPending);
-
-        let total_amount = prediction.total_amount;
-        let fee_percentage = 5; // 5% fee
-        let fee_amount = (total_amount * fee_percentage as u64) / 100;
-        let reward_pool = total_amount - fee_amount;
-
-        let winning_amount = match prediction.result {
-            PredictionResult::True => prediction.yes_amount,
-            PredictionResult::False => prediction.no_amount,
-            PredictionResult::Undefined => return Err(PredictionError::InvalidResult.into()),
-        };
-
-        // Calculate reward
-        let reward_per_lamport = (reward_pool * 1_000_000) / winning_amount; // Multiply by 1,000,000 for precision
-        let reward_amount = (claim.amount * reward_per_lamport) / 1_000_000;
-
-        // Transfer reward to the user
-        let reward_transfer_ctx = CpiContext::new(
-            ctx.accounts.system_program.to_account_info(),
-            anchor_lang::system_program::Transfer {
-                from: ctx.accounts.market_state.to_account_info(),
-                to: ctx.accounts.user.to_account_info(),
-            },
-        );
-        anchor_lang::system_program::transfer(reward_transfer_ctx, reward_amount)?;
-
-        claim.state = ClaimState::Approved;
-
-        emit!(ClaimApprovedEvent {
+        emit!(ClaimSubmittedEvent {
             prediction_id: prediction.id,
             user: ctx.accounts.user.key(),
             amount: reward_amount,
@@ -213,6 +207,179 @@ pub mod prediction_marketplace {
 
         Ok(())
     }
+
+    pub fn distribute_rewards(ctx: Context<DistributeRewards>) -> Result<()> {
+        let prediction = &mut ctx.accounts.prediction;
+        let market_state = &ctx.accounts.market_state;
+
+        // Ensure the prediction is resolved
+        require!(
+            prediction.state == PredictionState::Resolved,
+            PredictionError::PredictionNotResolved
+        );
+
+        // Ensure rewards haven't been distributed yet
+        require!(
+            !prediction.rewards_distributed,
+            PredictionError::RewardsAlreadyDistributed
+        );
+
+        let total_pool = prediction.total_amount;
+        let admin_fee = (total_pool * 5) / 100; // 5% admin fee
+        let reward_pool = total_pool - admin_fee;
+
+        // Transfer admin fee
+        let admin_transfer_instruction = anchor_lang::system_program::Transfer {
+            from: prediction.to_account_info(),
+            to: market_state.to_account_info(),
+        };
+        anchor_lang::system_program::transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.system_program.to_account_info(),
+                admin_transfer_instruction,
+                &[&[
+                    b"prediction",
+                    market_state.key().as_ref(),
+                    prediction.id.to_le_bytes().as_ref(),
+                    &[ctx.bumps.prediction],
+                ]],
+            ),
+            admin_fee,
+        )?;
+
+        // Calculate winning amount
+        let winning_amount = if prediction.result == PredictionResult::True {
+            prediction.yes_amount
+        } else {
+            prediction.no_amount
+        };
+
+        // Calculate reward per lamport
+        let reward_per_lamport = (reward_pool * 1_000_000) / winning_amount;
+
+        prediction.reward_per_lamport = reward_per_lamport;
+        prediction.rewards_distributed = true;
+
+        emit!(RewardsDistributedEvent {
+            prediction_id: prediction.id,
+            total_pool,
+            admin_fee,
+            reward_pool,
+            reward_per_lamport,
+        });
+
+        Ok(())
+    }
+
+    pub fn claim_reward(ctx: Context<ClaimReward>) -> Result<()> {
+        let prediction = &ctx.accounts.prediction;
+        let user_prediction = &mut ctx.accounts.user_prediction;
+        let user = &ctx.accounts.user;
+
+        // Ensure the prediction is resolved and rewards are distributed
+        require!(
+            prediction.state == PredictionState::Resolved,
+            PredictionError::PredictionNotResolved
+        );
+        require!(
+            prediction.rewards_distributed,
+            PredictionError::RewardsNotDistributed
+        );
+
+        // Ensure the user hasn't claimed their reward yet
+        require!(
+            !user_prediction.reward_claimed,
+            PredictionError::RewardAlreadyClaimed
+        );
+
+        // Check if the user is a winner
+        let is_winner = match prediction.result {
+            PredictionResult::True => user_prediction.verdict,
+            PredictionResult::False => !user_prediction.verdict,
+            PredictionResult::Undefined => return Err(PredictionError::InvalidResult.into()),
+        };
+        require!(is_winner, PredictionError::UserNotWinner);
+
+        // Calculate the reward
+        let reward = (user_prediction.amount * prediction.reward_per_lamport) / 1_000_000;
+
+        // Transfer the reward
+        let transfer_instruction = anchor_lang::system_program::Transfer {
+            from: prediction.to_account_info(),
+            to: user.to_account_info(),
+        };
+        anchor_lang::system_program::transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.system_program.to_account_info(),
+                transfer_instruction,
+                &[&[
+                    b"prediction",
+                    ctx.accounts.market_state.key().as_ref(),
+                    prediction.id.to_le_bytes().as_ref(),
+                    &[ctx.bumps.prediction],
+                ]],
+            ),
+            reward,
+        )?;
+
+        // Mark the reward as claimed
+        user_prediction.reward_claimed = true;
+
+        emit!(RewardClaimedEvent {
+            prediction_id: prediction.id,
+            user: user.key(),
+            amount: reward,
+        });
+
+        Ok(())
+    }
+
+    pub fn approve_claims(ctx: Context<ApproveClaims>, claim_indices: Vec<u64>) -> Result<()> {
+        let market_state = &ctx.accounts.market_state;
+        let prediction = &ctx.accounts.prediction;
+        let claims = &mut ctx.accounts.claims;
+
+        require!(
+            ctx.accounts.admin.key() == market_state.admin,
+            PredictionError::NotAuthorized
+        );
+
+        let mut total_approved_amount = 0;
+
+        for &index in claim_indices.iter() {
+            require!(
+                (index as usize) < claims.pending_claims.len(),
+                PredictionError::InvalidClaimIndex
+            );
+            let claim = &mut claims.pending_claims[index as usize];
+            require!(
+                claim.state == ClaimState::Pending,
+                PredictionError::ClaimNotPending
+            );
+
+            claim.state = ClaimState::Approved;
+            total_approved_amount += claim.amount;
+
+            emit!(ClaimApprovedEvent {
+                prediction_id: prediction.id,
+                user: claim.user,
+                amount: claim.amount,
+            });
+        }
+
+        // Transfer total approved amount to the claims account
+        let transfer_ctx = CpiContext::new(
+            ctx.accounts.system_program.to_account_info(),
+            anchor_lang::system_program::Transfer {
+                from: ctx.accounts.market_state.to_account_info(),
+                to: ctx.accounts.claims.to_account_info(),
+            },
+        );
+        anchor_lang::system_program::transfer(transfer_ctx, total_approved_amount)?;
+
+        Ok(())
+    }
+
 }
 
 #[derive(Accounts)]
@@ -252,7 +419,7 @@ pub struct Predict<'info> {
     #[account(
         init_if_needed,
         payer = user,
-        space = 8 + 32 + 8 + 8 + 1,
+        space = 8 + 32 + 8 + 8 + 1 + 1, // Adjust this if needed
         seeds = [b"user_prediction", prediction.key().as_ref(), user.key().as_ref()],
         bump
     )]
@@ -268,9 +435,38 @@ pub struct ResolvePrediction<'info> {
 }
 
 #[derive(Accounts)]
-pub struct RegisterUser<'info> {
-    #[account(init, payer = user, space = 8 + 4 + MAX_ALIAS_LENGTH + 8 + 8 + 8 + 8)]
-    pub user_account: Account<'info, UserAccount>,
+pub struct DistributeRewards<'info> {
+    #[account(
+        mut,
+        seeds = [b"prediction", market_state.key().as_ref(), prediction.id.to_le_bytes().as_ref()],
+        bump
+    )]
+    pub prediction: Account<'info, Prediction>,
+    #[account(mut)]
+    pub market_state: Account<'info, MarketState>,
+    #[account(mut, constraint = admin.key() == market_state.admin @ PredictionError::NotAuthorized)]
+    pub admin: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct ClaimReward<'info> {
+    #[account(mut)]
+    pub market_state: Account<'info, MarketState>,
+    #[account(
+        mut,
+        seeds = [b"prediction", market_state.key().as_ref(), prediction.id.to_le_bytes().as_ref()],
+        bump
+    )]
+    pub prediction: Account<'info, Prediction>,
+    #[account(
+        mut,
+        seeds = [b"user_prediction", prediction.key().as_ref(), user.key().as_ref()],
+        bump,
+        constraint = user_prediction.user == user.key() @ PredictionError::NotAuthorized,
+        constraint = user_prediction.prediction_id == prediction.id @ PredictionError::InvalidPrediction,
+    )]
+    pub user_prediction: Account<'info, UserPrediction>,
     #[account(mut)]
     pub user: Signer<'info>,
     pub system_program: Program<'info, System>,
@@ -280,14 +476,8 @@ pub struct RegisterUser<'info> {
 pub struct SubmitClaim<'info> {
     #[account(mut)]
     pub prediction: Account<'info, Prediction>,
-    #[account(
-        init,
-        payer = user,
-        space = 8 + 32 + 8 + 8 + 1,
-        seeds = [b"claim", prediction.key().as_ref(), user.key().as_ref()],
-        bump
-    )]
-    pub claim: Account<'info, Claim>,
+    #[account(mut)]
+    pub claims: Account<'info, Claims>,
     pub user_prediction: Account<'info, UserPrediction>,
     #[account(mut)]
     pub user: Signer<'info>,
@@ -295,17 +485,14 @@ pub struct SubmitClaim<'info> {
 }
 
 #[derive(Accounts)]
-pub struct ApproveClaim<'info> {
+pub struct ApproveClaims<'info> {
     #[account(mut)]
     pub market_state: Account<'info, MarketState>,
     pub prediction: Account<'info, Prediction>,
     #[account(mut)]
-    pub claim: Account<'info, Claim>,
+    pub claims: Account<'info, Claims>,
     #[account(mut)]
     pub admin: Signer<'info>,
-    /// CHECK: This account is not read in the contract, only written to
-    #[account(mut)]
-    pub user: UncheckedAccount<'info>,
     pub system_program: Program<'info, System>,
 }
 
@@ -332,6 +519,15 @@ pub struct Prediction {
     pub prediction_type: u8,
     pub options_count: u8,
     pub tags: Vec<String>,
+    pub reward_info: Option<RewardInfo>,
+    pub reward_per_lamport: u64,
+    pub rewards_distributed: bool,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+pub struct RewardInfo {
+    pub reward_per_lamport: u64,
+    pub total_reward_pool: u64,
 }
 
 #[account]
@@ -344,17 +540,26 @@ pub struct UserAccount {
 }
 
 #[account]
+#[derive(Default)]
 pub struct UserPrediction {
     pub user: Pubkey,
     pub prediction_id: u64,
     pub amount: u64,
     pub verdict: bool,
+    pub reward_claimed: bool,
 }
 
 #[account]
+pub struct Claims {
+    pub prediction: Pubkey,
+    pub reward_per_lamport: u64,
+    pub total_reward_pool: u64,
+    pub pending_claims: Vec<Claim>,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
 pub struct Claim {
     pub user: Pubkey,
-    pub prediction_id: u64,
     pub amount: u64,
     pub state: ClaimState,
 }
@@ -377,6 +582,7 @@ pub enum PredictionResult {
 pub enum ClaimState {
     Pending,
     Approved,
+    Claimed,
     Rejected,
 }
 
@@ -412,6 +618,55 @@ pub enum PredictionError {
     ClaimNotPending,
     #[msg("User is not a winner")]
     UserNotWinner,
+    #[msg("Invalid claim index")]
+    InvalidClaimIndex,
+    #[msg("No approved claim found for the user")]
+    NoApprovedClaim,
+    #[msg("Reward already claimed")]
+    AlreadyClaimed,
+    #[msg("Claim Not winner")]
+    NotWinner,
+    #[msg("Rewards have already been distributed")]
+    RewardsAlreadyDistributed,
+    #[msg("Rewards have not been distributed yet")]
+    RewardsNotDistributed,
+    #[msg("Reward already claimed")]
+    RewardAlreadyClaimed,
+    #[msg("Invalid Prediction")]
+    InvalidPrediction,
+}
+
+#[event]
+pub struct RewardsDistributedEvent {
+    pub prediction_id: u64,
+    pub total_pool: u64,
+    pub admin_fee: u64,
+    pub reward_pool: u64,
+    pub reward_per_lamport: u64,
+}
+
+#[event]
+pub struct RewardClaimedEvent {
+    pub prediction_id: u64,
+    pub user: Pubkey,
+    pub amount: u64,
+}
+
+#[derive(Accounts)]
+pub struct InitializeClaims<'info> {
+    #[account(mut)]
+    pub prediction: Account<'info, Prediction>,
+    #[account(
+        init,
+        payer = admin,
+        space = 8 + 32 + 8 + 8 + 4 + (32 + 8 + 1) * 5000, // Increased from 1000 to 5000
+        seeds = [b"claims", prediction.key().as_ref()],
+        bump
+    )]
+    pub claims: Account<'info, Claims>,
+    #[account(mut)]
+    pub admin: Signer<'info>,
+    pub system_program: Program<'info, System>,
 }
 
 #[event]
@@ -433,12 +688,6 @@ pub struct PredictionMadeEvent {
 pub struct PredictionResolvedEvent {
     pub prediction_id: u64,
     pub result: PredictionResult,
-}
-
-#[event]
-pub struct RegisterEvent {
-    pub user_address: Pubkey,
-    pub alias: String,
 }
 
 #[event]

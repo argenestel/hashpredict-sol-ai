@@ -1,11 +1,15 @@
 import express from 'express';
 import { OpenAI } from 'openai';
-import { AptosClient, AptosAccount, HexString } from 'aptos';
+import { Connection, PublicKey, Keypair, SystemProgram } from '@solana/web3.js';
+import { Program, AnchorProvider, web3 } from '@project-serum/anchor';
 import axios from 'axios';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
+import bs58 from 'bs58';
+import fs from 'fs';
+import path from 'path';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -23,18 +27,22 @@ const openai = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY,
 });
 
-// Aptos Configuration
-const NODE_URL = process.env.APTOS_NODE_URL || "https://fullnode.devnet.aptoslabs.com";
-const aptosClient = new AptosClient(NODE_URL, {
-    WITH_CREDENTIALS: false
-});
+// Solana Configuration
+const SOLANA_NETWORK = process.env.SOLANA_NETWORK || 'devnet';
+const connection = new Connection(web3.clusterApiUrl(SOLANA_NETWORK), 'confirmed');
+const PROGRAM_ID = new PublicKey(process.env.PROGRAM_ID);
+const MARKET_STATE_PUBKEY = new PublicKey(process.env.MARKET_STATE_PUBKEY);
 
-const MODULE_ADDRESS = '0xe5daef3712e9be57eee01a28e4b16997e89e0b446546d304d5ec71afc9d1bacd';
-const MODULE_NAME = 'hashpredictalpha';
+// Create a Solana wallet from private key
+const privateKey = bs58.decode(process.env.PRIVATE_KEY_SOLANA);
+const wallet = Keypair.fromSecretKey(privateKey);
 
-// Create an Aptos account from private key
-const privateKey = new HexString(process.env.PRIVATE_KEY_APTOS);
-const account = new AptosAccount(privateKey.toUint8Array());
+// Initialize Anchor provider
+const provider = new AnchorProvider(connection, wallet, AnchorProvider.defaultOptions());
+
+// Load the program IDL
+const idl = JSON.parse(fs.readFileSync(path.join(__dirname, './programsidl.json'), 'utf8'));
+const program = new Program(idl, PROGRAM_ID, provider);
 
 async function getPerplexityData(query) {
     try {
@@ -130,52 +138,38 @@ Your response:
     }
 }
 
-async function getPredictionDetails(predictionId) {
+// Function to list all predictions
+async function listAllPredictions() {
     try {
-        const result = await aptosClient.view({
-            function: `${MODULE_ADDRESS}::${MODULE_NAME}::get_prediction`,
-            type_arguments: [],
-            arguments: [predictionId]
-        });
-        console.log("Prediction Details:", JSON.stringify(result, null, 2));
-        return result;
+        const predictions = await program.account.prediction.all();
+        console.log("All Predictions:", predictions.map(p => ({
+            publicKey: p.publicKey.toBase58(),
+            id: p.account.id.toString(),
+            description: p.account.description
+        })));
+        return predictions;
     } catch (error) {
-        console.error("Error in getPredictionDetails:", error);
-        // If HTTP/2 is not supported, try fallback to HTTP/1.1
-        if (error.message.includes("h2 is not supported")) {
-            console.log("Attempting fallback to HTTP/1.1");
-            const fallbackClient = new AptosClient(NODE_URL, {
-                WITH_CREDENTIALS: false,
-                HTTP2: false
-            });
-            const fallbackResult = await fallbackClient.view({
-                function: `${MODULE_ADDRESS}::${MODULE_NAME}::get_prediction`,
-                type_arguments: [],
-                arguments: [predictionId]
-            });
-            console.log("Fallback Prediction Details:", JSON.stringify(fallbackResult, null, 2));
-            return fallbackResult;
-        }
-        throw error;
+        console.error("Error listing predictions:", error);
+        throw new Error(`Failed to list predictions: ${error.message}`);
     }
 }
 
-async function finalizePredictionOnChain(predictionId, outcome) {
-    const payload = {
-        function: `${MODULE_ADDRESS}::${MODULE_NAME}::resolve_prediction`,
-        type_arguments: [],
-        arguments: [predictionId, outcome]
-    };
-
+// Fetch prediction details using its public key
+async function getPredictionDetailsViaPublicKey(predictionId) {
     try {
-        const txnRequest = await aptosClient.generateTransaction(account.address(), payload);
-        const signedTxn = await aptosClient.signTransaction(account, txnRequest);
-        const txnResult = await aptosClient.submitTransaction(signedTxn);
-        await aptosClient.waitForTransaction(txnResult.hash);
-        return txnResult;
+        const predictions = await listAllPredictions();
+        const prediction = predictions.find(p => p.account.id.toString() === predictionId);
+        
+        if (!prediction) {
+            console.error(`Prediction with ID ${predictionId} not found`);
+            return null;
+        }
+
+        console.log("Prediction Details:", JSON.stringify(prediction, null, 2));
+        return prediction;
     } catch (error) {
-        console.error("Error in finalizePredictionOnChain:", error);
-        throw error;
+        console.error("Error in getPredictionDetailsViaPublicKey:", error);
+        throw new Error(`Failed to get prediction details: ${error.message}`);
     }
 }
 
@@ -183,181 +177,83 @@ app.post("/finalize-prediction/:id", async (req, res) => {
     try {
         const predictionId = req.params.id;
 
-        console.log(`Attempting to finalize prediction ${predictionId}`);
+        console.log(`Preparing finalization data for prediction ${predictionId}`);
 
-        // Get prediction details from Aptos
-        let predictionDetailsArray;
+        let predictionDetails;
         try {
-            predictionDetailsArray = await getPredictionDetails(predictionId);
+            predictionDetails = await getPredictionDetailsViaPublicKey(predictionId);
         } catch (error) {
             console.error("Error fetching prediction details:", error);
             return res.status(500).json({ error: "Failed to fetch prediction details", details: error.message });
         }
 
-        if (!Array.isArray(predictionDetailsArray) || predictionDetailsArray.length === 0) {
-            console.error("Invalid prediction data:", predictionDetailsArray);
+        if (!predictionDetails) {
+            console.error(`Prediction with ID ${predictionId} not found`);
             return res.status(404).json({ error: "Prediction not found" });
         }
 
-        const predictionDetails = predictionDetailsArray[0];
-        const description = predictionDetails.description;
+        const description = predictionDetails.account.description;
 
         if (!description) {
-            console.error("Prediction description is undefined:", predictionDetails);
+            console.error("Prediction description is undefined:", predictionDetails.account);
             return res.status(500).json({ error: "Invalid prediction data", details: "Description is undefined" });
         }
 
-        console.log(`Finalizing prediction ${predictionId}: ${description}`);
+        console.log(`Preparing finalization data for prediction ${predictionId}: ${description}`);
 
-        let currentData;
-        try {
-            currentData = await getPerplexityData(description);
-        } catch (error) {
-            console.error("Error fetching current data:", error);
-            return res.status(500).json({ error: "Failed to fetch current data", details: error.message });
-        }
+        const currentData = await getPerplexityData(description);
+        const outcome = await determineOutcome(description, currentData);
 
-        let outcome;
-        try {
-            outcome = await determineOutcome(description, currentData);
-        } catch (error) {
-            console.error(`Error determining outcome for prediction ${predictionId}:`, error);
-            return res.status(500).json({ error: "Failed to determine outcome", details: error.message });
-        }
+        res.json({
+            aiOutcome: outcome,
+            currentData: currentData,
+        });
 
-        console.log(`Determined outcome for prediction ${predictionId}:`, outcome);
-
-        try {
-            const txnResult = await finalizePredictionOnChain(predictionId, outcome.outcome);
-            console.log(`Finalized prediction ${predictionId} with transaction hash:`, txnResult.hash);
-            res.json({ 
-                message: `Prediction ${predictionId} finalized successfully`,
-                outcome: outcome,
-                transactionHash: txnResult.hash
-            });
-        } catch (error) {
-            console.error(`Error finalizing prediction ${predictionId} on the blockchain:`, error);
-            res.status(500).json({ error: "Failed to finalize prediction on the blockchain", details: error.message });
-        }
     } catch (error) {
         console.error("Error in finalize-prediction endpoint:", error);
         res.status(500).json({ error: error.message, stack: error.stack });
     }
 });
 
-
-async function claimDailyReward(userAddress) {
-    const payload = {
-        function: `${MODULE_ADDRESS}::reward_system::claim_daily_reward`,
-        type_arguments: [],
-        arguments: [userAddress]
-    };
-
+// New endpoint to actually finalize the prediction
+app.post("/execute-finalization/:id", async (req, res) => {
     try {
-        const txnRequest = await aptosClient.generateTransaction(account.address(), payload);
-        const signedTxn = await aptosClient.signTransaction(account, txnRequest);
-        const txnResult = await aptosClient.submitTransaction(signedTxn);
-        await aptosClient.waitForTransaction(txnResult.hash);
-        return txnResult;
-    } catch (error) {
-        console.error("Error in claimDailyReward:", error);
-        throw error;
-    }
-}
+        const predictionId = req.params.id;
+        const { finalOutcome } = req.body;
 
-async function useReferralCode(userAddress, referralCode) {
-    const payload = {
-        function: `${MODULE_ADDRESS}::reward_system::use_referral_code`,
-        type_arguments: [],
-        arguments: [userAddress, referralCode]
-    };
+        if (finalOutcome === undefined) {
+            return res.status(400).json({ error: "Final outcome is required" });
+        }
 
-    try {
-        const txnRequest = await aptosClient.generateTransaction(account.address(), payload);
-        const signedTxn = await aptosClient.signTransaction(account, txnRequest);
-        const txnResult = await aptosClient.submitTransaction(signedTxn);
-        await aptosClient.waitForTransaction(txnResult.hash);
-        return txnResult;
-    } catch (error) {
-        console.error("Error in useReferralCode:", error);
-        throw error;
-    }
-}
+        const predictionDetails = await getPredictionDetailsViaPublicKey(predictionId);
 
-async function getReferrals(userAddress) {
-    try {
-        const result = await aptosClient.view({
-            function: `${MODULE_ADDRESS}::reward_system::get_referrals`,
-            type_arguments: [],
-            arguments: [userAddress]
+        const tx = await program.methods
+            .resolvePrediction({ [finalOutcome ? 'true' : 'false']: {} })
+            .accounts({
+                marketState: MARKET_STATE_PUBKEY,
+                prediction: predictionDetails.publicKey,
+                admin: wallet.publicKey,
+                systemProgram: SystemProgram.programId,
+            })
+            .rpc();
+
+        await program.provider.connection.confirmTransaction(tx, "confirmed");
+        console.log(`Finalized prediction ${predictionId} with transaction signature:`, tx);
+        res.json({
+            message: `Prediction ${predictionId} finalized successfully`,
+            outcome: finalOutcome,
+            transactionSignature: tx
         });
-        return result[0];
     } catch (error) {
-        console.error("Error in getReferrals:", error);
-        throw error;
-    }
-}
-
-async function getDailyClaimInfo(userAddress) {
-    try {
-        const result = await aptosClient.view({
-            function: `${MODULE_ADDRESS}::reward_system::get_daily_claim_info`,
-            type_arguments: [],
-            arguments: [userAddress]
-        });
-        return { lastClaimTime: result[0], currentStreak: result[1] };
-    } catch (error) {
-        console.error("Error in getDailyClaimInfo:", error);
-        throw error;
-    }
-}
-
-// New endpoints
-app.post("/claim-daily-reward", async (req, res) => {
-    try {
-        const { userAddress } = req.body;
-        const result = await claimDailyReward(userAddress);
-        res.json({ success: true, transactionHash: result.hash });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
+        console.error(`Error finalizing prediction ${predictionId} on the blockchain:`, error);
+        res.status(500).json({ error: "Failed to finalize prediction on the blockchain", details: error.message });
     }
 });
-
-app.post("/use-referral-code", async (req, res) => {
-    try {
-        const { userAddress, referralCode } = req.body;
-        const result = await useReferralCode(userAddress, referralCode);
-        res.json({ success: true, transactionHash: result.hash });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.get("/get-referrals/:userAddress", async (req, res) => {
-    try {
-        const { userAddress } = req.params;
-        const referrals = await getReferrals(userAddress);
-        res.json({ referrals });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.get("/get-daily-claim-info/:userAddress", async (req, res) => {
-    try {
-        const { userAddress } = req.params;
-        const claimInfo = await getDailyClaimInfo(userAddress);
-        res.json(claimInfo);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
 
 async function generatePredictions(topic) {
     try {
         const perplexityData = await getPerplexityData(topic);
-        
+
         const gpt4Prompt = `
 Based on the following current information about ${topic}:
 
@@ -406,23 +302,17 @@ Ensure the predictions are diverse and cover different aspects of the topic.
 
 app.post("/test/generate-predictions", async (req, res) => {
     try {
-        console.log("Received request to generate test predictions");
         const { topic } = req.body;
         if (!topic) {
             return res.status(400).json({ error: "Topic is required" });
         }
 
-        console.log("Generating test predictions for topic:", topic);
         const predictions = await generatePredictions(topic);
-        console.log("Generated test predictions:", predictions);
-
         res.json({ predictions: predictions });
     } catch (error) {
-        console.error("Error in test generate-predictions endpoint:", error);
         res.status(500).json({ error: error.message, stack: error.stack });
     }
 });
-
 
 app.listen(port, () => {
     console.log(`Server running at http://localhost:${port}`);
