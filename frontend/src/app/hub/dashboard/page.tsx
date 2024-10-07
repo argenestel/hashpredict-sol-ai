@@ -63,9 +63,12 @@ const SolanaPredictionDashboard: React.FC = () => {
   const program = new Program(idl as any, PROGRAM_ID, provider);
 
   useEffect(() => {
+    fetchPredictions();
+  }, [connection]);
+
+  useEffect(() => {
     if (wallet.publicKey) {
       checkAdminRole();
-      fetchPredictions();
     }
   }, [wallet.publicKey, connection]);
 
@@ -86,14 +89,6 @@ const SolanaPredictionDashboard: React.FC = () => {
       }
     }
   };
-
-
-  useEffect(() => {
-    if (wallet.publicKey) {
-      checkAdminRole();
-      fetchPredictions();
-    }
-  }, [wallet.publicKey, connection]);
 
   const fetchPredictions = async () => {
     setIsLoading(true);
@@ -125,7 +120,6 @@ const SolanaPredictionDashboard: React.FC = () => {
       setIsLoading(false);
     }
   };
-
   const handleCreatePrediction = async () => {
     if (!wallet.publicKey) {
       toast.error('Wallet not connected');
@@ -234,14 +228,13 @@ const SolanaPredictionDashboard: React.FC = () => {
       {label}
     </motion.button>
   );
-
   
   return (
     <div className="min-h-screen bg-gray-100 dark:bg-navy-900">
     <Toaster />
     <div className="container mx-auto px-4 py-8">
       <div className="flex flex-col md:flex-row justify-between items-center mb-8">
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap gap-2 mb-4 md:mb-0">
           <motion.button
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
@@ -274,7 +267,7 @@ const SolanaPredictionDashboard: React.FC = () => {
       </div>
 
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 space-y-4 sm:space-y-0">
-        <div className="flex space-x-2">
+        <div className="flex space-x-2 mb-4 sm:mb-0">
           {renderTabButton('active', 'Active')}
           {renderTabButton('expired', 'Expired')}
           {renderTabButton('resolved', 'Resolved')}
@@ -283,7 +276,7 @@ const SolanaPredictionDashboard: React.FC = () => {
           whileHover={{ scale: 1.05 }}
           whileTap={{ scale: 0.95 }}
           onClick={() => setIsFilterOpen(!isFilterOpen)}
-          className="bg-gray-200 dark:bg-navy-700 text-gray-700 dark:text-gray-300 rounded-lg py-2 px-4 text-sm flex items-center justify-center"
+          className="bg-gray-200 dark:bg-navy-700 text-gray-700 dark:text-gray-300 rounded-lg py-2 px-4 text-sm flex items-center justify-center w-full sm:w-auto"
         >
           <IoFilter className="mr-2" /> Filter by Tags
           <IoChevronDown className={`ml-2 transition-transform ${isFilterOpen ? 'rotate-180' : ''}`} />
@@ -329,25 +322,25 @@ const SolanaPredictionDashboard: React.FC = () => {
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3 gap-6">
-{(activeTab === 'active' ? active : activeTab === 'expired' ? expired : resolved).map((prediction) => (
-     <PredictionCard
-     key={prediction.publicKey.toString()}
-     prediction={prediction}
-     onPredict={(publicKey, verdict, amount) => {
-       // Update the local state when a prediction is made
-       setPredictions(prevPredictions => 
-         prevPredictions.map(p => 
-           p.publicKey.equals(publicKey) 
-             ? { ...p, account: { ...p.account, /* update relevant fields */ } }
-             : p
-         )
-       );
-     }}
-     isAdmin={isAdminRole}
-     program={program}
-     wallet={wallet}
-   />
-))}
+          {(activeTab === 'active' ? active : activeTab === 'expired' ? expired : resolved).map((prediction) => (
+            <PredictionCard
+              key={prediction.publicKey.toString()}
+              prediction={prediction}
+              onPredict={(publicKey, verdict, amount) => {
+                // Update the local state when a prediction is made
+                setPredictions(prevPredictions => 
+                  prevPredictions.map(p => 
+                    p.publicKey.equals(publicKey) 
+                      ? { ...p, account: { ...p.account, /* update relevant fields */ } }
+                      : p
+                  )
+                );
+              }}
+              isAdmin={isAdminRole}
+              program={program}
+              wallet={wallet}
+            />
+          ))}
         </div>
       )}
 
@@ -372,7 +365,7 @@ const SolanaPredictionDashboard: React.FC = () => {
         </div>
       )}
     </div>
-
+    
       {/* Create Prediction Modal */}
       <AnimatePresence>
         {isModalOpen && (

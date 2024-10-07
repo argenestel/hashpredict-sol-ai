@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useWallet, useConnection } from '@solana/wallet-adapter-react';
 import { WalletReadyState } from '@solana/wallet-adapter-base';
+import { LAMPORTS_PER_SOL } from '@solana/web3.js';
 import { IoWallet, IoClose, IoChevronDown, IoCopy, IoWarning } from 'react-icons/io5';
 import { motion, AnimatePresence } from 'framer-motion';
 import toast from 'react-hot-toast';
@@ -32,22 +33,29 @@ const SolanaWalletSelector = ({ onConnect }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [availableWallets, setAvailableWallets] = useState([]);
   const [network, setNetwork] = useState('');
+  const [balance, setBalance] = useState(null);
 
   useEffect(() => {
     const installed = wallets.filter((wallet) => 
       wallet.readyState === WalletReadyState.Installed || 
-      wallet.adapter.name === 'UnsafeBurnerWallet'
+      wallet.adapter.name === 'Burner Wallet'
     );
     setAvailableWallets(installed);
+
+    // Log all wallet names
+    console.log('All available wallets:', wallets.map(wallet => wallet.adapter.name));
+    console.log('Installed wallets:', installed.map(wallet => wallet.adapter.name));
   }, [wallets]);
 
   useEffect(() => {
     if (publicKey) {
       onConnect(true, publicKey.toString());
+      fetchBalance();
     } else {
       onConnect(false, null);
+      setBalance(null);
     }
-  }, [publicKey, onConnect]);
+  }, [publicKey, onConnect, connection]);
 
   useEffect(() => {
     const getNetworkName = async () => {
@@ -76,6 +84,18 @@ const SolanaWalletSelector = ({ onConnect }) => {
 
     getNetworkName();
   }, [connection]);
+
+  const fetchBalance = async () => {
+    if (publicKey && connection) {
+      try {
+        const balance = await connection.getBalance(publicKey);
+        setBalance(balance / LAMPORTS_PER_SOL);
+      } catch (error) {
+        console.error('Failed to fetch balance:', error);
+        setBalance(null);
+      }
+    }
+  };
 
   const handleConnect = async (wallet) => {
     try {
@@ -170,6 +190,12 @@ const SolanaWalletSelector = ({ onConnect }) => {
                   <div className="bg-gray-100 dark:bg-navy-700 p-4 rounded-lg">
                     <p className="text-sm text-gray-600 dark:text-gray-300 mb-1">Network</p>
                     <p className="font-medium dark:text-white">{network}</p>
+                  </div>
+                  <div className="bg-gray-100 dark:bg-navy-700 p-4 rounded-lg">
+                    <p className="text-sm text-gray-600 dark:text-gray-300 mb-1">Balance</p>
+                    <p className="font-medium dark:text-white">
+                      {balance !== null ? `${balance.toFixed(4)} SOL` : 'Loading...'}
+                    </p>
                   </div>
                   <motion.button
                     whileHover={{ scale: 1.02 }}
