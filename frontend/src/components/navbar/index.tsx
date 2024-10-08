@@ -222,13 +222,13 @@ const NavBar = ({ isMobile }) => {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-70"
+            className="fixed inset-0 bg-black flex items-center justify-center p-4 z-50"
           >
             <motion.div 
               initial={{ scale: 0.9, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.9, opacity: 0 }}
-              className="bg-white/10 backdrop-blur-sm rounded-2xl p-6 max-w-sm w-full shadow-lg dark:bg-[#0b14374d]"
+              className="bg-white/10 rounded-2xl p-6 max-w-sm w-full shadow-lg dark:bg-[#0b14374d]"
             >
               <h2 className="text-xl font-bold mb-4 text-gray-800 dark:text-white">Welcome to #Predict.AI!</h2>
               <p className="text-gray-600 dark:text-gray-300 mb-4">Let's quickly go through the main features of our prediction marketplace:</p>
