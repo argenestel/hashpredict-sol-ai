@@ -90,6 +90,35 @@ const SolanaPredictionDashboard: React.FC = () => {
     }
   };
 
+  const handleRequestFunds = async () => {
+    if (!wallet.publicKey) {
+      toast.error('Wallet not connected');
+      return;
+    }
+
+    try {
+      const signature = await connection.requestAirdrop(
+        wallet.publicKey,
+        LAMPORTS_PER_SOL // Request 1 SOL
+      );
+      
+      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+      
+      await connection.confirmTransaction({
+        blockhash,
+        lastValidBlockHeight,
+        signature,
+      });
+
+      toast.success('Airdropped 1 SOL successfully!');
+    } catch (error) {
+      console.error('Error requesting airdrop:', error);
+      toast.error('Failed to request airdrop. Please try again.');
+    }
+  };
+
+  
+
   const fetchPredictions = async () => {
     setIsLoading(true);
     try {
@@ -238,12 +267,12 @@ const SolanaPredictionDashboard: React.FC = () => {
           <motion.button
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
-            onClick={() => {console.log("requested funds")}}
+            onClick={() => handleRequestFunds()}
             className="bg-blue-500 text-white rounded-lg py-2 px-4 text-sm flex items-center justify-center"
           >
             <IoWater className="mr-2" /> Request Funds
           </motion.button>
-          {isAdminRole && (
+          {/* {isAdminRole && ( */}
             <>
               <motion.button
                 whileHover={{ scale: 1.05 }}
@@ -262,7 +291,7 @@ const SolanaPredictionDashboard: React.FC = () => {
                 <IoBulb className="mr-2" /> Generate
               </motion.button>
             </>
-          )}
+          {/* )} */}
         </div>
       </div>
 
