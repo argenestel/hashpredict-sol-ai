@@ -24,7 +24,7 @@ interface PredictionData {
     predictionType: number;
     optionsCount: number;
     tags: string[];
-    pendingClaims: { user: PublicKey; amount: BN }[];
+    pendingClaims: { user: PublicKey; amount: BN; shares: number }[];
   };
 }
 
@@ -136,7 +136,7 @@ const PredictionCard: React.FC<PredictionCardProps> = ({ prediction, onPredict, 
   }, [program, prediction, onPredict]);
   useEffect(() => {
     const currentTime = Math.floor(Date.now() / 1000);
-    const endTime = prediction.account.endTime.toNumber(); // Convert BN to number
+    const endTime = Number(prediction.account.endTime); // Convert BN to number
     const isPredictionEnded = currentTime > endTime;
     console.log('Current time:', currentTime);
     console.log('End time:', endTime);
@@ -666,7 +666,7 @@ const PredictionCard: React.FC<PredictionCardProps> = ({ prediction, onPredict, 
     }
   
     try {
-      const amount = new BN(shareAmount * LAMPORTS_PER_SOL);
+      const amount = new BN(shareAmount * LAMPORTS_PER_SOL/10);
   
       const [userPredictionPDA] = PublicKey.findProgramAddressSync(
         [
